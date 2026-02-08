@@ -58,7 +58,10 @@ from hub import port
 motor.run(port.A, 1000)
 ```
 
-`spike_usb` then stops after the configured duration using `motor.stop(port.X)` with defensive fallbacks.
+`spike_usb` uses non-blocking run semantics:
+- `POST /motor/run` starts motion immediately (`motor.run(...)`) and returns quickly.
+- Timing is controlled by ROS sending a later stop command.
+- `POST /motor/stop` performs `motor.stop(port.X)` with fallbacks (`motor.run(..., 0)`, then `motor.set_duty_cycle(..., 0)`).
 
 It tries to discover serial devices such as:
 - `/dev/cu.usbmodem*`
@@ -105,6 +108,6 @@ python3 -m host_agent.tools.spike_usb_smoketest --serial-port auto --motor-port 
 ## API
 
 - `GET /health` -> `{ "ok": true, "backend": "mock|spike_ble|spike_usb", "spike_connected": bool }`
-- `POST /motor/run` with `{ "speed": float, "duration": float }` -> `{ "accepted": true|false, "error": "..." }`
+- `POST /motor/run` with `{ "speed": float, "duration": float }` -> `{ "accepted": true|false, "note": "nonblocking; duration handled by ROS stop commands", "error": "..." }`
 - `POST /motor/stop` -> `{ "stopped": true|false, "error": "..." }`
 - `GET /state` -> `{ "state": "idle|running", "last_speed": 0.0, "timestamp": ... }`

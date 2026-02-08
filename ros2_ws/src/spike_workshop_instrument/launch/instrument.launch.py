@@ -12,6 +12,8 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument("unreachable_log_throttle_sec", default_value="10.0"),
         DeclareLaunchArgument("consecutive_failures_to_mark_down", default_value="2"),
         DeclareLaunchArgument("consecutive_successes_to_mark_up", default_value="1"),
+        DeclareLaunchArgument("queue_policy", default_value="latest"),
+        DeclareLaunchArgument("fifo_queue_size", default_value="32"),
         DeclareLaunchArgument("participant_id", default_value="1"),
         DeclareLaunchArgument("name", default_value="instrument"),
         DeclareLaunchArgument("mode", default_value="pulse"),
@@ -45,6 +47,8 @@ def generate_launch_description() -> LaunchDescription:
                 "consecutive_successes_to_mark_up": LaunchConfiguration(
                     "consecutive_successes_to_mark_up"
                 ),
+                "queue_policy": LaunchConfiguration("queue_policy"),
+                "fifo_queue_size": LaunchConfiguration("fifo_queue_size"),
             }
         ],
     )

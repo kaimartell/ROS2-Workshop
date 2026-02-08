@@ -6,7 +6,7 @@ from host_agent.backends.spike_usb_backend import SpikeUsbBackend
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Smoke test for SPIKE USB backend (motor.run + stop snippet path)"
+        description="Smoke test for SPIKE USB backend (non-blocking motor.run then explicit stop)"
     )
     parser.add_argument("--serial-port", default="auto", help="Serial port (default: auto)")
     parser.add_argument("--baud", type=int, default=115200, help="Serial baud")
@@ -62,7 +62,7 @@ def main() -> None:
         print(f"stop: {stop_result}")
         _print_diag(stop_result)
 
-    print("PASS: spike_usb run snippet (motor.run + stop fallback) completed")
+    print("PASS: spike_usb non-blocking run + explicit stop completed")
 
 
 if __name__ == "__main__":

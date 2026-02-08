@@ -19,6 +19,7 @@ Participants inspect and control the system with `ros2 topic`, `ros2 service`, a
 3. Dockerized ROS 2 container talks to `host_agent` via `http://host.docker.internal:8000`.
 4. `spike_hw_client_node` bridges ROS topics/services to host HTTP.
 5. `instrument_node` publishes motor commands and status based on launch parameters.
+6. Timing lives in ROS behavior logic: start motion with non-zero speed and stop with `speed:=0` (mapped to `/motor/stop`).
 
 ## Prerequisites
 
@@ -108,6 +109,16 @@ Common launch parameters:
 - `mode` (`pulse|sweep|metronome|random_wiggle|sequence`)
 - `speed`, `duration`, `repeats`, `bpm`, `amplitude`
 - `host_agent_url` (default `http://host.docker.internal:8000`)
+- `queue_policy` (`latest|edges|fifo`, default `latest`)
+
+Queue policy recommendation:
+- Use `queue_policy:=edges` for pulse/sequence patterns to preserve run/stop transitions.
+- Use `queue_policy:=latest` for joystick-like continuous control.
+
+Timing note:
+- For real SPIKE USB backend, `/motor/run` is non-blocking (starts motor quickly).
+- `duration` is treated as advisory by the host agent.
+- Effective timing comes from ROS publishing a later stop command (`speed=0`, which `spike_hw_client_node` maps to `/motor/stop`).
 
 ## Troubleshooting
 
@@ -124,6 +135,7 @@ Motor not moving:
 - Check ROS connectivity: `ros2 service call /spike/ping std_srvs/srv/Trigger "{}"`
 - Try mock mode to isolate ROS path from hardware:
   `python3 -m host_agent --port 8000 --backend mock`
+- If pulse counts collapse, launch with `queue_policy:=edges` and/or increase pulse `duration` and gap/off-time.
 
 ## What’s next
 

@@ -85,6 +85,8 @@ class HostAgentRequestHandler(BaseHTTPRequestHandler):
                     response: Dict[str, Any] = {"accepted": accepted}
                     if "error" in result:
                         response["error"] = str(result["error"])
+                    if "note" in result:
+                        response["note"] = str(result["note"])
                     self._write_json(HTTPStatus.OK, response)
                 else:
                     self._write_json(HTTPStatus.OK, {"accepted": True})

@@ -1,7 +1,8 @@
 import json
 import threading
 import time
-from typing import Any, Dict, Optional, Tuple
+from collections import deque
+from typing import Any, Deque, Dict, Optional, Tuple
 
 import rclpy
 from rclpy.node import Node
@@ -9,6 +10,10 @@ from std_msgs.msg import String
 from std_srvs.srv import Trigger
 
 from spike_workshop_hw.http_client import HostAgentHttpClient
+
+STOP_COMMAND_EPSILON = 1e-3
+DEFAULT_FIFO_QUEUE_SIZE = 32
+QUEUE_PRESSURE_LOG_THROTTLE_SEC = 5.0
 
 
 class SpikeHwClientNode(Node):
@@ -21,6 +26,8 @@ class SpikeHwClientNode(Node):
         self.declare_parameter("unreachable_log_throttle_sec", 10.0)
         self.declare_parameter("consecutive_failures_to_mark_down", 2)
         self.declare_parameter("consecutive_successes_to_mark_up", 1)
+        self.declare_parameter("queue_policy", "latest")
+        self.declare_parameter("fifo_queue_size", DEFAULT_FIFO_QUEUE_SIZE)
 
         host_agent_url = str(self.get_parameter("host_agent_url").value).rstrip("/")
         poll_hz = float(self.get_parameter("poll_hz").value)
@@ -39,12 +46,22 @@ class SpikeHwClientNode(Node):
             self.get_parameter("consecutive_successes_to_mark_up").value
         )
         consecutive_successes_to_mark_up = max(1, consecutive_successes_to_mark_up)
+        queue_policy = str(self.get_parameter("queue_policy").value).strip().lower()
+        if queue_policy not in {"latest", "edges", "fifo"}:
+            self.get_logger().warning(
+                f"Unknown queue_policy='{queue_policy}', falling back to 'latest'."
+            )
+            queue_policy = "latest"
+        fifo_queue_size = int(self.get_parameter("fifo_queue_size").value)
+        fifo_queue_size = max(1, fifo_queue_size)
 
         self._host_agent_url = host_agent_url
         self._http_timeout_sec = http_timeout_sec
         self._unreachable_log_throttle_sec = unreachable_log_throttle_sec
         self._consecutive_failures_to_mark_down = consecutive_failures_to_mark_down
         self._consecutive_successes_to_mark_up = consecutive_successes_to_mark_up
+        self._queue_policy = queue_policy
+        self._fifo_queue_size = fifo_queue_size
 
         self._http_client = HostAgentHttpClient(host_agent_url, timeout=http_timeout_sec)
 
@@ -58,8 +75,16 @@ class SpikeHwClientNode(Node):
         self._last_unreachable_log_monotonic = 0.0
 
         self._cmd_lock = threading.Lock()
-        self._pending_cmd: Optional[Tuple[float, float]] = None
-        self._dropped_cmd_count = 0
+        self._pending_cmd_latest: Optional[Tuple[float, float]] = None
+        self._latest_replaced_count = 0
+        self._pending_run_cmd: Optional[Tuple[float, float]] = None
+        self._pending_stop_cmd: Optional[Tuple[float, float]] = None
+        self._run_replaced_count = 0
+        self._stop_replaced_count = 0
+        self._fifo_queue: Deque[Tuple[float, float]] = deque()
+        self._fifo_drop_count = 0
+        self._last_sent_speed = 0.0
+        self._last_queue_pressure_log_monotonic = 0.0
         self._cmd_event = threading.Event()
 
         self._shutting_down = False
@@ -83,7 +108,8 @@ class SpikeHwClientNode(Node):
                 f"http_timeout_sec={http_timeout_sec:.2f}, "
                 f"unreachable_log_throttle_sec={unreachable_log_throttle_sec:.1f}, "
                 f"consecutive_failures_to_mark_down={consecutive_failures_to_mark_down}, "
-                f"consecutive_successes_to_mark_up={consecutive_successes_to_mark_up}"
+                f"consecutive_successes_to_mark_up={consecutive_successes_to_mark_up}, "
+                f"queue_policy={queue_policy}, fifo_queue_size={fifo_queue_size}"
             ),
         )
         self._safe_log("info", "Ping service ready on /spike/ping")
@@ -198,22 +224,116 @@ class SpikeHwClientNode(Node):
             level, message = event
             self._safe_log(level, message)
 
-    def _queue_latest_command(self, speed: float, duration: float) -> None:
+    @staticmethod
+    def _is_stop_command(speed: float) -> bool:
+        return abs(speed) < STOP_COMMAND_EPSILON
+
+    def _has_pending_commands_locked(self) -> bool:
+        if self._queue_policy == "latest":
+            return self._pending_cmd_latest is not None
+        if self._queue_policy == "edges":
+            return self._pending_run_cmd is not None or self._pending_stop_cmd is not None
+        return bool(self._fifo_queue)
+
+    def _maybe_log_queue_pressure(self) -> None:
+        now = time.monotonic()
         with self._cmd_lock:
-            if self._pending_cmd is not None:
-                self._dropped_cmd_count += 1
-            self._pending_cmd = (speed, duration)
+            if now - self._last_queue_pressure_log_monotonic < QUEUE_PRESSURE_LOG_THROTTLE_SEC:
+                return
+
+            if self._queue_policy == "latest":
+                pressure = self._latest_replaced_count > 0
+                detail = f"replaced={self._latest_replaced_count}"
+            elif self._queue_policy == "edges":
+                pressure = (self._run_replaced_count + self._stop_replaced_count) > 0
+                detail = (
+                    f"run_replaced={self._run_replaced_count}, "
+                    f"stop_replaced={self._stop_replaced_count}"
+                )
+            else:
+                pressure = self._fifo_drop_count > 0
+                detail = (
+                    f"fifo_dropped={self._fifo_drop_count}, "
+                    f"fifo_depth={len(self._fifo_queue)}/{self._fifo_queue_size}"
+                )
+
+            if not pressure:
+                return
+
+            self._last_queue_pressure_log_monotonic = now
+
+        self._safe_log(
+            "warning",
+            (
+                f"Command publish rate exceeds forwarding rate (queue_policy={self._queue_policy}, {detail}). "
+                "Pulse/sequence timing may collapse. Increase duration/off_time or switch to queue_policy:=edges."
+            ),
+        )
+
+    def _queue_command(self, speed: float, duration: float) -> None:
+        with self._cmd_lock:
+            if self._queue_policy == "latest":
+                if self._pending_cmd_latest is not None:
+                    self._latest_replaced_count += 1
+                self._pending_cmd_latest = (speed, duration)
+            elif self._queue_policy == "edges":
+                if self._is_stop_command(speed):
+                    if self._pending_stop_cmd is not None:
+                        self._stop_replaced_count += 1
+                    self._pending_stop_cmd = (speed, duration)
+                else:
+                    if self._pending_run_cmd is not None:
+                        self._run_replaced_count += 1
+                    self._pending_run_cmd = (speed, duration)
+            else:
+                if len(self._fifo_queue) >= self._fifo_queue_size:
+                    self._fifo_queue.popleft()
+                    self._fifo_drop_count += 1
+                self._fifo_queue.append((speed, duration))
+
             self._cmd_event.set()
 
-    def _pop_latest_command(self) -> Tuple[Optional[Tuple[float, float]], int]:
+        self._maybe_log_queue_pressure()
+
+    def _pop_next_command(self) -> Tuple[Optional[Tuple[float, float]], Dict[str, int]]:
+        diagnostics: Dict[str, int] = {}
+        cmd: Optional[Tuple[float, float]] = None
+
         with self._cmd_lock:
-            cmd = self._pending_cmd
-            dropped = self._dropped_cmd_count
-            self._pending_cmd = None
-            self._dropped_cmd_count = 0
-            if self._pending_cmd is None:
+            if self._queue_policy == "latest":
+                cmd = self._pending_cmd_latest
+                diagnostics["replaced"] = self._latest_replaced_count
+                self._pending_cmd_latest = None
+                self._latest_replaced_count = 0
+            elif self._queue_policy == "edges":
+                running = not self._is_stop_command(self._last_sent_speed)
+                if running and self._pending_stop_cmd is not None:
+                    cmd = self._pending_stop_cmd
+                    self._pending_stop_cmd = None
+                elif (not running) and self._pending_run_cmd is not None:
+                    cmd = self._pending_run_cmd
+                    self._pending_run_cmd = None
+                elif self._pending_stop_cmd is not None:
+                    cmd = self._pending_stop_cmd
+                    self._pending_stop_cmd = None
+                elif self._pending_run_cmd is not None:
+                    cmd = self._pending_run_cmd
+                    self._pending_run_cmd = None
+
+                diagnostics["run_replaced"] = self._run_replaced_count
+                diagnostics["stop_replaced"] = self._stop_replaced_count
+                self._run_replaced_count = 0
+                self._stop_replaced_count = 0
+            else:
+                if self._fifo_queue:
+                    cmd = self._fifo_queue.popleft()
+                diagnostics["fifo_dropped"] = self._fifo_drop_count
+                self._fifo_drop_count = 0
+
+            if not self._has_pending_commands_locked():
                 self._cmd_event.clear()
-            return cmd, dropped
+
+        return cmd, diagnostics
 
     def _command_worker_loop(self) -> None:
         while True:
@@ -221,33 +341,46 @@ class SpikeHwClientNode(Node):
             if self._shutting_down:
                 return
 
-            cmd, dropped = self._pop_latest_command()
+            cmd, diagnostics = self._pop_next_command()
             if cmd is None:
                 continue
 
             speed, duration = cmd
-            result, meta = self._http_client.run_motor_with_meta(speed=speed, duration=duration)
+            is_stop = self._is_stop_command(speed)
+            if is_stop:
+                result, meta = self._http_client.stop_motor_with_meta()
+                source = "POST /motor/stop"
+            else:
+                result, meta = self._http_client.run_motor_with_meta(speed=speed, duration=duration)
+                source = "POST /motor/run"
+
             self._record_connectivity(
                 transport_ok=bool(meta.get("ok", False)),
-                source="POST /motor/run",
+                source=source,
                 latency_ms=self._to_float(meta.get("latency_ms")),
                 error=str(meta.get("error", "")),
             )
 
-            accepted = bool(result.get("accepted", False))
+            accepted = bool(result.get("stopped", False)) if is_stop else bool(result.get("accepted", False))
             if accepted:
-                dropped_note = ""
-                if dropped > 0:
-                    dropped_note = f" (dropped_intermediate={dropped})"
-                self._safe_log(
-                    "info",
-                    (
-                        f"Forwarded motor command speed={speed:.3f} "
-                        f"duration={duration:.3f}s{dropped_note}"
-                    ),
-                )
+                with self._cmd_lock:
+                    self._last_sent_speed = 0.0 if is_stop else speed
+
+                dropped_parts = [f"{key}={value}" for key, value in diagnostics.items() if value > 0]
+                dropped_note = f" ({', '.join(dropped_parts)})" if dropped_parts else ""
+                if is_stop:
+                    self._safe_log("info", f"Forwarded motor stop command{dropped_note}")
+                else:
+                    self._safe_log(
+                        "info",
+                        (
+                            f"Forwarded motor command speed={speed:.3f} "
+                            f"duration={duration:.3f}s{dropped_note}"
+                        ),
+                    )
             else:
-                self._safe_log("warning", f"Host agent did not accept command: {result}")
+                action = "stop" if is_stop else "run"
+                self._safe_log("warning", f"Host agent did not accept motor/{action} command: {result}")
 
     def _on_cmd(self, msg: String) -> None:
         if self._shutting_down:
@@ -261,7 +394,7 @@ class SpikeHwClientNode(Node):
             self._safe_log("warning", f"Ignoring malformed /spike/cmd payload: {exc}")
             return
 
-        self._queue_latest_command(speed=speed, duration=duration)
+        self._queue_command(speed=speed, duration=duration)
 
     def _poll_state(self) -> None:
         if self._shutting_down:

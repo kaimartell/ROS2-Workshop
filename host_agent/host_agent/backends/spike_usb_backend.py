@@ -11,6 +11,7 @@ from host_agent.serial_repl import RawExecResult, SerialMicroPythonClient
 
 USB_OK_MARKER = "__SPIKE_USB_OK__"
 USB_ERR_MARKER = "__SPIKE_USB_ERR__"
+STOP_SPEED_EPSILON = 1e-3
 
 _SERIAL_CANDIDATE_REGEX = re.compile(
     r"^/dev/(cu|tty)\.(usbmodem|usbserial|SLAB_USBtoUART|wchusbserial|ttyUSB|ttyACM)",
@@ -189,13 +190,11 @@ class SpikeUsbBackend:
 
         return default
 
-    def _build_run_snippet(self, speed: float, duration: float) -> str:
+    def _build_run_snippet(self, speed: float) -> str:
         velocity = int(max(-1000, min(1000, int(float(speed) * 1000.0))))
-        duration = max(0.0, float(duration))
         port_letter = self._motor_port
 
         snippet = f"""
-import time
 try:
     import motor
 except Exception as _e:
@@ -220,25 +219,6 @@ try:
     motor.run(_p, {velocity})
 except Exception as _e:
     raise RuntimeError("motor.run failed: " + repr(_e))
-
-time.sleep({duration})
-try:
-    motor.stop(_p)
-except Exception as _e1:
-    try:
-        motor.run(_p, 0)
-    except Exception as _e2:
-        try:
-            motor.set_duty_cycle(_p, 0)
-        except Exception as _e3:
-            raise RuntimeError(
-                "motor stop fallbacks failed: "
-                + repr(_e1)
-                + "; "
-                + repr(_e2)
-                + "; "
-                + repr(_e3)
-            )
 
 print({USB_OK_MARKER!r})
 """
@@ -294,27 +274,35 @@ print({USB_OK_MARKER!r})
         self._running_until = 0.0
         self._timestamp = time.time()
 
+    def _set_running(self, speed: float) -> None:
+        self._state = "running"
+        self._last_speed = float(speed)
+        self._running_until = 0.0
+        self._timestamp = time.time()
+
     def run_with_diagnostics(self, speed: float, duration: float) -> Dict[str, Any]:
         with self._lock:
             safe_speed = max(-1.0, min(1.0, float(speed)))
-            safe_duration = max(0.0, float(duration))
-            self._state = "running"
-            self._last_speed = safe_speed
-            self._running_until = time.monotonic() + safe_duration
-            self._timestamp = time.time()
+            advisory_duration = max(0.0, float(duration))
 
             result = self._execute(
-                snippet=self._build_run_snippet(safe_speed, safe_duration),
-                timeout=self._command_timeout + safe_duration + 1.0,
+                snippet=self._build_run_snippet(safe_speed),
+                timeout=max(2.0, self._command_timeout),
             )
-
-            self._set_idle()
 
             accepted = bool(result.ok and USB_OK_MARKER in (result.stdout or "") and not result.stderr.strip())
             if accepted:
                 self._spike_connected = True
                 self._last_error = ""
-                return {"accepted": True}
+                if abs(safe_speed) < STOP_SPEED_EPSILON:
+                    self._set_idle()
+                else:
+                    self._set_running(safe_speed)
+                return {
+                    "accepted": True,
+                    "note": "nonblocking; duration handled by ROS stop commands",
+                    "duration_advisory_sec": advisory_duration,
+                }
 
             self._spike_connected = False
             error = self._extract_error_from_result(result, default="USB run command failed")
@@ -369,9 +357,6 @@ print({USB_OK_MARKER!r})
 
     def get_state(self) -> Dict[str, Any]:
         with self._lock:
-            if self._state == "running" and time.monotonic() >= self._running_until:
-                self._set_idle()
-
             return {
                 "state": self._state,
                 "last_speed": self._last_speed,
