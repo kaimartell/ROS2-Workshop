@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "host-agent"
+version = "0.1.0"
+description = "Host HTTP agent for Spike workshop"
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [
+  {name = "Workshop Team", email = "workshop@example.com"}
+]
+dependencies = []
+
+[project.optional-dependencies]
+spike_ble = ["bleak>=0.22"]
+spike_usb = ["pyserial>=3.5"]
+
+[project.scripts]
+host-agent = "host_agent.__main__:main"
+
+[tool.setuptools]
+packages = ["host_agent", "host_agent.backends", "host_agent.tools"]

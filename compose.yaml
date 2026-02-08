@@ -1,0 +1,29 @@
+services:
+  participant:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: ${SPIKE_WORKSHOP_IMAGE:-spike_workshop_participant:latest}
+    container_name: spike_workshop_participant
+    stdin_open: true
+    tty: true
+    environment:
+      ROS_DOMAIN_ID: "25"
+      RMW_IMPLEMENTATION: rmw_fastrtps_cpp
+    command: bash
+
+  participant-dev:
+    profiles: ["dev"]
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: ${SPIKE_WORKSHOP_IMAGE:-spike_workshop_participant:latest}
+    container_name: spike_workshop_participant_dev
+    stdin_open: true
+    tty: true
+    environment:
+      ROS_DOMAIN_ID: "25"
+      RMW_IMPLEMENTATION: rmw_fastrtps_cpp
+    volumes:
+      - ./ros2_ws/src:/ros2_ws/src
+    command: bash

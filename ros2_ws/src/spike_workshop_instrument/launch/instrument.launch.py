@@ -1,0 +1,77 @@
+from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument
+from launch.substitutions import LaunchConfiguration
+from launch_ros.actions import Node
+
+
+def generate_launch_description() -> LaunchDescription:
+    launch_args = [
+        DeclareLaunchArgument("host_agent_url", default_value="http://host.docker.internal:8000"),
+        DeclareLaunchArgument("poll_hz", default_value="2.0"),
+        DeclareLaunchArgument("http_timeout_sec", default_value="1.5"),
+        DeclareLaunchArgument("unreachable_log_throttle_sec", default_value="10.0"),
+        DeclareLaunchArgument("consecutive_failures_to_mark_down", default_value="2"),
+        DeclareLaunchArgument("consecutive_successes_to_mark_up", default_value="1"),
+        DeclareLaunchArgument("participant_id", default_value="1"),
+        DeclareLaunchArgument("name", default_value="instrument"),
+        DeclareLaunchArgument("mode", default_value="pulse"),
+        DeclareLaunchArgument("speed", default_value="0.6"),
+        DeclareLaunchArgument("duration", default_value="1.0"),
+        DeclareLaunchArgument("repeats", default_value="4"),
+        DeclareLaunchArgument("bpm", default_value="120.0"),
+        DeclareLaunchArgument("amplitude", default_value="0.6"),
+        DeclareLaunchArgument("sweep_steps", default_value="8"),
+        DeclareLaunchArgument("seed", default_value="0"),
+        DeclareLaunchArgument("sequence_file", default_value=""),
+        DeclareLaunchArgument("cmd_topic", default_value="/spike/cmd"),
+        DeclareLaunchArgument("done_topic", default_value="/done"),
+        DeclareLaunchArgument("status_topic", default_value="/status"),
+    ]
+
+    hw_node = Node(
+        package="spike_workshop_hw",
+        executable="spike_hw_client_node",
+        name="spike_hw_client_node",
+        output="screen",
+        parameters=[
+            {
+                "host_agent_url": LaunchConfiguration("host_agent_url"),
+                "poll_hz": LaunchConfiguration("poll_hz"),
+                "http_timeout_sec": LaunchConfiguration("http_timeout_sec"),
+                "unreachable_log_throttle_sec": LaunchConfiguration("unreachable_log_throttle_sec"),
+                "consecutive_failures_to_mark_down": LaunchConfiguration(
+                    "consecutive_failures_to_mark_down"
+                ),
+                "consecutive_successes_to_mark_up": LaunchConfiguration(
+                    "consecutive_successes_to_mark_up"
+                ),
+            }
+        ],
+    )
+
+    instrument_node = Node(
+        package="spike_workshop_instrument",
+        executable="instrument_node",
+        name="instrument_node",
+        output="screen",
+        parameters=[
+            {
+                "participant_id": LaunchConfiguration("participant_id"),
+                "name": LaunchConfiguration("name"),
+                "mode": LaunchConfiguration("mode"),
+                "speed": LaunchConfiguration("speed"),
+                "duration": LaunchConfiguration("duration"),
+                "repeats": LaunchConfiguration("repeats"),
+                "bpm": LaunchConfiguration("bpm"),
+                "amplitude": LaunchConfiguration("amplitude"),
+                "sweep_steps": LaunchConfiguration("sweep_steps"),
+                "seed": LaunchConfiguration("seed"),
+                "sequence_file": LaunchConfiguration("sequence_file"),
+                "cmd_topic": LaunchConfiguration("cmd_topic"),
+                "done_topic": LaunchConfiguration("done_topic"),
+                "status_topic": LaunchConfiguration("status_topic"),
+            }
+        ],
+    )
+
+    return LaunchDescription(launch_args + [hw_node, instrument_node])

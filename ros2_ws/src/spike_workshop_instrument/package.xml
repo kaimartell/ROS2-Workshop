@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>spike_workshop_instrument</name>
+  <version>0.1.0</version>
+  <description>No-code participant instrument behaviors for Spike workshop.</description>
+  <maintainer email="workshop@example.com">Workshop Team</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <depend>launch</depend>
+  <depend>launch_ros</depend>
+  <depend>rclpy</depend>
+  <depend>std_msgs</depend>
+  <depend>python3-yaml</depend>
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

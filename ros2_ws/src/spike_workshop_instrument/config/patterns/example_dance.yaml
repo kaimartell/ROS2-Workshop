@@ -1,0 +1,14 @@
+name: "example_dance"
+sequence:
+  - speed: 0.8
+    duration: 0.3
+  - speed: 0.0
+    duration: 0.1
+  - speed: -0.8
+    duration: 0.3
+  - speed: 0.0
+    duration: 0.1
+  - speed: 0.4
+    duration: 0.2
+  - speed: -0.4
+    duration: 0.2

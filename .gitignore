@@ -1,0 +1,44 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.venv/
+venv/
+env/
+ENV/
+build/
+dist/
+*.egg-info/
+pip-wheel-metadata/
+
+# ROS 2 / colcon build outputs
+log/
+build/
+install/
+ros2_ws/log/
+ros2_ws/build/
+ros2_ws/install/
+
+# Docker / local env files
+.env
+.env.*
+*.tar
+
+# Editor / IDE
+.idea/
+.vscode/

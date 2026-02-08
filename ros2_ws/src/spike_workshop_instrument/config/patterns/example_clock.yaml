@@ -1,0 +1,10 @@
+name: "example_clock"
+sequence:
+  - speed: 0.5
+    duration: 0.25
+  - speed: 0.0
+    duration: 0.25
+  - speed: 0.5
+    duration: 0.25
+  - speed: 0.0
+    duration: 0.25
