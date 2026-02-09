@@ -25,8 +25,11 @@ Instead of restarting launch files for each pattern, you control playback via se
 - Clone this repo.
 
 ```bash
-git clone https://github.com/<your-org-or-user>/spike-ros-workshop.git
+git clone https://github.com/kaimartell/ROS2-Workshop.git
 cd spike-ros-workshop
+
+Docker Desktop Install
+https://docs.docker.com/desktop/setup/install/mac-install/
 
 cd host_agent
 python3 -m pip install -e ".[spike_usb]"
