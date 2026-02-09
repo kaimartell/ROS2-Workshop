@@ -13,7 +13,7 @@ This repository gives participants ROS flow:
 ROS graph:
 - nodes: `instrument_node`, `spike_hw_client_node`
 - topics: `/actuate`, `/status`, `/done`, `/spike/state`
-- services: `/spike/ping`, `/instrument/list_patterns`, `/instrument/generate_pattern`, `/instrument/play_pattern`, `/instrument/stop`
+- services: `/spike/ping`, `/instrument/list_patterns`, `/instrument/generate_score`, `/instrument/play_pattern`, `/instrument/stop`
 
 ## Pre-Workshop Setup
 
@@ -46,6 +46,14 @@ cd ..
 ./scripts/start_host_agent_usb.sh
 ```
 
+USB auto-selection notes:
+- On macOS, if a single hub appears as both `/dev/cu.usbmodem...` and `/dev/tty.usbmodem...`, the script treats that as one device and auto-selects `/dev/cu.*`.
+- If multiple distinct devices are present, the script asks for explicit `SPIKE_SERIAL`.
+- List candidates without starting:
+  - `./scripts/start_host_agent_usb.sh --list`
+- Preview command without starting:
+  - `./scripts/start_host_agent_usb.sh --dry-run`
+
 2. In another terminal window, start container:
 
 This step may take a few minutes for the container to install all dependencies
@@ -59,204 +67,148 @@ This step may take a few minutes for the container to install all dependencies
 ros2 launch spike_workshop_instrument instrument.launch.py
 ```
 
-4. In container terminal #2, verify core services:
+4. Open a third terminal window and enter the docker container with:
+
+```bash
+docker exec -it spike-workshop-participant bash
+```
+
+5. In this third terminal, verify connectivity:
 
 ```bash
 ros2 service call /spike/ping std_srvs/srv/Trigger "{}"
 ros2 service call /instrument/list_patterns std_srvs/srv/Trigger "{}"
 ```
 
-5. Generate a user pattern via ROS service:
+
+## Play an instrument
+
+Keep `ros2 launch spike_workshop_instrument instrument.launch.py` running in one container terminal, then use ROS services from a second terminal in the same container.
+
+### 1) Play a preset (optional)
 
 ```bash
-ros2 service call /instrument/generate_pattern spike_workshop_interfaces/srv/GeneratePattern "{template_name: 'pulse', output_name: 'my_pulse', output_dir: '/patterns/user', speed: 0.6, duration_sec: 0.3, gap_sec: 0.2, repeats: 4, bpm: 120.0, degrees: 180}"
+ros2 service call /instrument/play_pattern spike_workshop_interfaces/srv/PlayPattern "{pattern_name: 'pulse_4', pattern_path: ''}"
 ```
 
-6. Play it by name (no relaunch):
+Success criteria:
+- `list_patterns` includes `presets/pulse_4`
+- `play_pattern` returns `accepted: true`
 
-```bash
-ros2 service call /instrument/play_pattern spike_workshop_interfaces/srv/PlayPattern "{pattern_name: 'my_pulse', pattern_path: ''}"
-```
-
-Play a melody preset:
-
-```bash
-ros2 service call /instrument/play_pattern spike_workshop_interfaces/srv/PlayPattern "{pattern_name: 'melody_scale', pattern_path: ''}"
-```
-
-7. Stop reliably:
-
-```bash
-ros2 service call /instrument/stop std_srvs/srv/Trigger "{}"
-```
-
-## Interactive Helper
-
-Inside container:
-
-```bash
-ros2 run spike_workshop_tools pattern_menu
-```
-
-The menu can:
-- list patterns
-- build a 4-bar score (`score_4bar`) from presets or pasted score strings
-- play patterns
-- stop playback
-
-It also prints equivalent `ros2 service call ...` commands for learning.
-
-## Create A 4-Bar Score
+### 2) Generate a 4-bar score (ROS-first)
 
 Score format:
 - 4 bars separated by `|`
-- 4 beat tokens per bar (16 beats total)
-- motor tokens: `F` (forward), `B` (backward), `S` (stop)
-- melody tokens: note names (`C4`, `A#4`, etc), integer frequency Hz, or `-` for rest
+- 4 tokens per bar (16 beats total)
+- motor lane tokens: `F` (forward), `B` (backward), `S` (stop)
+- melody lane tokens: note names (`C4`, `A#4`) or Hz (`440`) or rest (`-`)
 
-Example score strings:
-
-```text
-motor_score:  F S F S | F S F S | B S B S | B S B S
-melody_score: C4 D4 E4 F4 | G4 A4 B4 C5 | - - G4 - | C5 - - -
-```
-
-Generate a score pattern via ROS service:
+Generate a score with the dedicated service:
 
 ```bash
-ros2 service call /instrument/generate_pattern spike_workshop_interfaces/srv/GeneratePattern "{template_name: 'score_4bar', output_name: 'my_score', output_dir: '/patterns/user', speed: 0.5, duration_sec: 0.0, gap_sec: 0.0, repeats: 2, bpm: 120.0, degrees: 0, motor_score: 'F S F S | F S F S | B S B S | B S B S', melody_score: 'C4 D4 E4 F4 | G4 A4 B4 C5 | - - G4 - | C5 - - -', beep_volume: 60}"
+ros2 service call /instrument/generate_score spike_workshop_interfaces/srv/GenerateScore \
+    "{name: 'my_score', \
+    bpm: 120.0, \
+    repeats: 2, \
+    speed: 0.5, \
+    motor: 'F S F S | F S F S | B S B S | B S B S', \
+    melody: 'C4 D4 E4 F4 | G4 A4 B4 C5 | - - G4 - | C5 - - -', \
+    volume: 60}"
 ```
 
-Play the generated score (without relaunch):
+Motor-only example (leave melody empty):
+
+```bash
+ros2 service call /instrument/generate_score spike_workshop_interfaces/srv/GenerateScore "{name: 'motor_only', bpm: 100.0, repeats: 1, speed: 0.6, motor: 'F F S S | B B S S | F F S S | B B S S', melody: '', volume: 60}"
+```
+
+Melody-only example (leave motor empty):
+
+```bash
+ros2 service call /instrument/generate_score spike_workshop_interfaces/srv/GenerateScore "{name: 'melody_only', bpm: 110.0, repeats: 1, speed: 0.5, motor: '', melody: 'C4 D4 E4 F4 | G4 A4 B4 C5 | C5 B4 A4 G4 | F4 E4 D4 C4', volume: 70}"
+```
+
+Success criteria:
+- response includes `ok: true`
+- YAML is written under `/patterns/user/<name>.yaml`
+
+### 3) Play your score
 
 ```bash
 ros2 service call /instrument/play_pattern spike_workshop_interfaces/srv/PlayPattern "{pattern_name: 'my_score', pattern_path: ''}"
 ```
 
-## ROS Commands You Will Use
+Success criteria:
+- response includes `accepted: true`
+- `/status` moves to `running` then back to `idle`
+- `/done` publishes once when complete
 
-Observe graph:
+### 4) Stop playback
+
+```bash
+ros2 service call /instrument/stop std_srvs/srv/Trigger "{}"
+```
+
+Success criteria:
+- response includes `success: true`
+- motor stops immediately (best effort)
+
+### 5) Debugging / ROS introspection
 
 ```bash
 ros2 node list
 ros2 topic list
-ros2 service list
-```
-
-Observe status and completion:
-
-```bash
+ros2 service list | grep instrument
 ros2 topic echo /status
 ros2 topic echo /done
 ros2 topic echo /spike/state
+ros2 service call /spike/ping std_srvs/srv/Trigger "{}"
 ```
 
-Topic trigger still works for non-service workflow:
+### 6) Troubleshooting
+
+Host agent unreachable:
+- `curl http://localhost:8000/health`
+- restart with `./scripts/start_host_agent_usb.sh`
+
+`spike_connected: false`:
+- close LEGO SPIKE app
+- run `./scripts/start_host_agent_usb.sh --list`
+- choose explicit port:
 
 ```bash
-ros2 topic pub /actuate std_msgs/msg/Empty "{}" -1
-```
-
-## Patterns Quick Reference
-
-Preset patterns in `patterns/presets/`:
-- `pulse_4.yaml`: 4 timed pulses (`run_for_time` + `sleep`)
-- `metronome_90.yaml`: finite metronome-like pulses
-- `sweep_3s.yaml`: signed velocity sweep
-- `dance_basic.yaml`: mixed timed + degree actions
-- `clock_tick.yaml`: absolute encoder positions
-- `bounce_encoder.yaml`: relative encoder bounce + reset
-- `melody_scale.yaml`: C major speaker scale with `beep` steps
-- `melody_call_response.yaml`: interleaved beeps + motor motion
-- `score_motor_basic.yaml`: 4-bar motor-only score
-- `score_melody_scale.yaml`: 4-bar melody-only score
-- `score_call_response.yaml`: 4-bar motor + melody response pattern
-- `score_back_and_forth_groove.yaml`: 4-bar groove with both lanes
-
-Schema and step types:
-- `docs/pattern_schema.md`
-
-Pattern mode execution is sequential and timing-aware (`duration_sec`, optional `wait_sec`, `gap_sec`).
-
-Beep step example:
-
-```yaml
-- type: "beep"
-  freq_hz: 440
-  duration_ms: 120
-  volume: 60
-  gap_sec: 0.05
-```
-
-Speaker beeps use `from hub import sound` / `sound.beep(...)` and require firmware that provides `hub.sound`.
-
-Generate a melody pattern (no Python editing):
-
-```bash
-python3 scripts/pattern_wizard.py --preset melody \
-  --name my_melody \
-  --notes C4,D4,E4,F4,G4,A4,B4,C5 \
-  --duration-ms 140 \
-  --volume 60 \
-  --gap-sec 0.05 \
-  --out patterns/user/my_melody.yaml
-```
-
-## Optional Shortcut Script
-
-`play_pattern.sh` is still available as a convenience fallback:
-
-```bash
-./scripts/play_pattern.sh pulse_4
-```
-
-It is optional now. ROS services are the default workshop workflow.
-
-## Known Issues / FAQ
-
-### Host agent not reachable
-
-```bash
-curl http://localhost:8000/health
-```
-
-If needed, restart:
-
-```bash
-./scripts/start_host_agent_usb.sh
-```
-
-### USB serial auto-detect failed
-
-```bash
-python3 -m host_agent --list
 SPIKE_SERIAL=/dev/cu.usbmodemXXXX ./scripts/start_host_agent_usb.sh
 ```
 
-### LEGO SPIKE app conflict
-
-Close the SPIKE app; it can hold the serial port.
-
-### `ros2` not found in container shell
+No motion:
+- verify ping:
 
 ```bash
-source /opt/ros/humble/setup.bash
-source /ros2_ws/install/setup.bash
+ros2 service call /spike/ping std_srvs/srv/Trigger "{}"
 ```
 
-### Ctrl-C pressed but motor still moving
+No beep:
+- hub firmware must provide `hub.sound.beep`
+- try a melody step in score and check host agent logs for sound errors
 
-Use manual stop:
+Manual emergency stop:
 
 ```bash
 curl -s -X POST http://localhost:8000/motor/stop \
   -H "Content-Type: application/json" \
   -d '{"port":"A"}'
-
-curl -s -X POST http://localhost:8000/sound/stop \
-  -H "Content-Type: application/json" \
-  -d '{}'
 ```
+
+Core presets shipped for workshop:
+- `pulse_4`
+- `score_motor_basic`
+- `score_call_response`
+
+Backward compatibility:
+- `/instrument/generate_pattern` still works.
+- For `template_name: score_4bar`, legacy fields (`duration_sec`, `gap_sec`, `degrees`) are ignored.
+
+`pattern_wizard` and `pattern_menu` are deprecated and intentionally excluded from the workshop flow.
 
 ## Participant Fork/Clone
 

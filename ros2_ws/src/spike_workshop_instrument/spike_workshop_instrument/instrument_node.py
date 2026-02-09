@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import rclpy
 from rclpy.node import Node
-from spike_workshop_interfaces.srv import GeneratePattern, PlayPattern
+from spike_workshop_interfaces.srv import GeneratePattern, GenerateScore, PlayPattern
 from std_msgs.msg import Empty, String
 from std_srvs.srv import Trigger
 
@@ -17,6 +17,7 @@ from spike_workshop_instrument.pattern_schema import (
 )
 from spike_workshop_instrument.pattern_templates import (
     TEMPLATES,
+    build_score_pattern,
     build_template_pattern,
     ensure_yaml_output_path,
     write_pattern_yaml,
@@ -84,6 +85,11 @@ class InstrumentNode(Node):
             "/instrument/generate_pattern",
             self._on_generate_pattern,
         )
+        self._generate_score_srv = self.create_service(
+            GenerateScore,
+            "/instrument/generate_score",
+            self._on_generate_score,
+        )
 
         self._status_timer = self.create_timer(0.5, self._publish_status)
 
@@ -107,7 +113,7 @@ class InstrumentNode(Node):
 
         self._safe_log(
             "info",
-            "instrument_node ready. Services: /instrument/list_patterns, /instrument/generate_pattern, /instrument/play_pattern, /instrument/stop",
+            "instrument_node ready. Services: /instrument/list_patterns, /instrument/generate_score, /instrument/generate_pattern, /instrument/play_pattern, /instrument/stop",
         )
         self._safe_log(
             "info",
@@ -135,7 +141,6 @@ class InstrumentNode(Node):
         return [
             ("user", Path("/patterns/user")),
             ("presets", Path("/patterns/presets")),
-            ("builtin", Path("/ros2_ws/src/spike_workshop_instrument/config/patterns")),
         ]
 
     def _discover_patterns(self) -> List[str]:
@@ -449,6 +454,26 @@ class InstrumentNode(Node):
         output_dir = str(request.output_dir or "").strip() or "/patterns/user"
 
         try:
+            if template == "score_4bar":
+                output_path = self._generate_score_file(
+                    output_name=output_name,
+                    output_dir=output_dir,
+                    bpm=float(request.bpm),
+                    repeats=int(request.repeats),
+                    speed=float(request.speed),
+                    motor_score=str(request.motor_score),
+                    melody_score=str(request.melody_score),
+                    volume=int(request.beep_volume),
+                )
+                response.ok = True
+                response.message = (
+                    f"generated template=score_4bar as {output_path.name}; "
+                    "ignored legacy fields duration_sec/gap_sec/degrees; "
+                    f"play with /instrument/play_pattern pattern_name: '{output_path.stem}'"
+                )
+                response.written_path = str(output_path)
+                return response
+
             pattern = build_template_pattern(
                 template_name=template,
                 output_name=output_name,
@@ -464,7 +489,7 @@ class InstrumentNode(Node):
             )
             output_path = ensure_yaml_output_path(output_dir=output_dir, output_name=output_name)
             write_pattern_yaml(output_path, pattern)
-            _validated = load_and_validate_pattern(str(output_path))
+            load_and_validate_pattern(str(output_path))
         except Exception as exc:  # noqa: BLE001
             response.ok = False
             response.message = f"generate failed: {exc}"
@@ -477,6 +502,67 @@ class InstrumentNode(Node):
             f"play with /instrument/play_pattern pattern_name: '{output_path.stem}'"
         )
         response.written_path = str(output_path)
+        return response
+
+    def _generate_score_file(
+        self,
+        *,
+        output_name: str,
+        output_dir: str,
+        bpm: float,
+        repeats: int,
+        speed: float,
+        motor_score: str,
+        melody_score: str,
+        volume: int,
+    ) -> Path:
+        pattern = build_score_pattern(
+            output_name=output_name,
+            bpm=bpm,
+            repeats=repeats,
+            speed=speed,
+            motor_score=motor_score,
+            melody_score=melody_score,
+            beep_volume=volume,
+            motor_port="A",
+        )
+        output_path = ensure_yaml_output_path(output_dir=output_dir, output_name=output_name)
+        write_pattern_yaml(output_path, pattern)
+        load_and_validate_pattern(str(output_path))
+        return output_path
+
+    def _on_generate_score(
+        self,
+        request: GenerateScore.Request,
+        response: GenerateScore.Response,
+    ) -> GenerateScore.Response:
+        output_name = str(request.name or "").strip() or f"score_{int(time.time())}"
+        output_dir = "/patterns/user"
+        try:
+            output_path = self._generate_score_file(
+                output_name=output_name,
+                output_dir=output_dir,
+                bpm=float(request.bpm),
+                repeats=int(request.repeats),
+                speed=float(request.speed),
+                motor_score=str(request.motor),
+                melody_score=str(request.melody),
+                volume=int(request.volume),
+            )
+        except Exception as exc:  # noqa: BLE001
+            response.ok = False
+            response.message = f"generate score failed: {exc}"
+            response.output_path = ""
+            response.pattern_name = ""
+            return response
+
+        response.ok = True
+        response.output_path = str(output_path)
+        response.pattern_name = output_path.stem
+        response.message = (
+            f"generated score as {output_path.name}; "
+            f"play with /instrument/play_pattern pattern_name: '{output_path.stem}'"
+        )
         return response
 
     def _run_behavior(self) -> None:

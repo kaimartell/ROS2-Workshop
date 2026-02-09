@@ -2,7 +2,7 @@
 <package format="3">
   <name>spike_workshop_tools</name>
   <version>0.1.0</version>
-  <description>Interactive ROS tools for workshop pattern generation and playback.</description>
+  <description>Deprecated interactive ROS helpers retained for backward compatibility.</description>
   <maintainer email="workshop@example.com">Workshop Team</maintainer>
   <license>Apache-2.0</license>
 

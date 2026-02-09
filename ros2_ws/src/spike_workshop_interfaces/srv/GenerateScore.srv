@@ -1,0 +1,12 @@
+string name
+float64 bpm
+int32 repeats
+float64 speed
+string motor
+string melody
+int32 volume
+---
+bool ok
+string message
+string output_path
+string pattern_name

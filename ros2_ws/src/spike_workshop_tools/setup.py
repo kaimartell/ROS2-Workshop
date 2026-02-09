@@ -14,7 +14,7 @@ setup(
     zip_safe=True,
     maintainer="Workshop Team",
     maintainer_email="workshop@example.com",
-    description="Interactive ROS CLI helpers for workshop participants.",
+    description="Deprecated ROS helper retained for backward compatibility.",
     license="Apache-2.0",
     tests_require=["pytest"],
     entry_points={

@@ -16,6 +16,8 @@ from spike_workshop_instrument.score_utils import (
 
 TEMPLATES = ("pulse", "metronome_finite", "bounce_encoder", "clock_tick", "score_4bar")
 SCORE_DEFAULT_BEEP_DURATION_MS = 100
+SCORE_DEFAULT_SPEED = 0.5
+SCORE_DEFAULT_VOLUME = 60
 
 
 def _timestamped_name(prefix: str) -> str:
@@ -217,6 +219,66 @@ def _score_steps(
     return steps
 
 
+def build_score_pattern(
+    *,
+    output_name: str,
+    bpm: float,
+    repeats: int,
+    speed: float,
+    motor_score: str = "",
+    melody_score: str = "",
+    beep_volume: int = SCORE_DEFAULT_VOLUME,
+    motor_port: str = "A",
+) -> Dict[str, Any]:
+    bpm_value = float(bpm)
+    if bpm_value <= 0.0:
+        raise ValueError("bpm must be > 0")
+
+    repeat_count = max(1, int(repeats))
+
+    speed_value = abs(float(speed))
+    if speed_value <= 0.0:
+        speed_value = SCORE_DEFAULT_SPEED
+    speed_value = min(1.0, speed_value)
+
+    volume_value = int(beep_volume)
+    if volume_value <= 0:
+        volume_value = SCORE_DEFAULT_VOLUME
+    volume_value = max(0, min(100, volume_value))
+
+    name = _normalized_name(output_name, fallback_prefix="score_4bar")
+    port = str(motor_port or "A").strip().upper() or "A"
+
+    motor_lane_raw = str(motor_score or "").strip()
+    melody_lane_raw = str(melody_score or "").strip()
+
+    preset_choice = resolve_score_preset(motor_lane_raw.lower())
+    if preset_choice is not None and not melody_lane_raw:
+        motor_lane_raw, melody_lane_raw = preset_choice
+
+    if not motor_lane_raw and not melody_lane_raw:
+        motor_lane_raw = MOTOR_PRESETS_REST
+        melody_lane_raw = MELODY_PRESETS_REST
+
+    steps = _score_steps(
+        bpm=bpm_value,
+        repeats=repeat_count,
+        speed=speed_value,
+        gap_sec=0.0,
+        motor_port=port,
+        beep_volume=volume_value,
+        motor_score=motor_lane_raw,
+        melody_score=melody_lane_raw,
+    )
+
+    return _base_pattern(
+        name=name,
+        motor_port=port,
+        stop_action="coast",
+        steps=steps,
+    )
+
+
 def build_template_pattern(
     *,
     template_name: str,
@@ -283,32 +345,15 @@ def build_template_pattern(
         )
 
     if template == "score_4bar":
-        motor_lane_raw = str(motor_score or "").strip()
-        melody_lane_raw = str(melody_score or "").strip()
-
-        preset_choice = resolve_score_preset(motor_lane_raw.lower())
-        if preset_choice is not None and not melody_lane_raw:
-            motor_lane_raw, melody_lane_raw = preset_choice
-
-        if not motor_lane_raw and not melody_lane_raw:
-            motor_lane_raw = MOTOR_PRESETS_REST
-            melody_lane_raw = MELODY_PRESETS_REST
-
-        steps = _score_steps(
+        return build_score_pattern(
+            output_name=name,
             bpm=bpm,
             repeats=repeats,
             speed=speed_clamped,
-            gap_sec=gap_sec,
-            motor_port=port,
+            motor_score=motor_score,
+            melody_score=melody_score,
             beep_volume=beep_volume,
-            motor_score=motor_lane_raw,
-            melody_score=melody_lane_raw,
-        )
-        return _base_pattern(
-            name=name,
             motor_port=port,
-            stop_action="coast",
-            steps=steps,
         )
 
     return _base_pattern(
