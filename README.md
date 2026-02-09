@@ -38,7 +38,7 @@ cd ..
 1. Start host agent:
 
 ```bash
-./scripts/run.sh
+./scripts/start_host_agent_usb.sh
 ```
 
 2. Start container:
