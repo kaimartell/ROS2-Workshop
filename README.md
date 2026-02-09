@@ -334,14 +334,14 @@ Graph sketch:
 ### Data Flow
 
 1. You call `/instrument/generate_score` with `motor` and optional `melody` strings
-2. `instrument_node` parses score bars/beats and writes normalized YAML to `/patterns/user/<name>.yaml`.
-3. You call `/instrument/play_pattern`.
+2. `instrument_node` parses score bars/beats and writes normalized YAML to `/patterns/user/<name>.yaml`
+3. You call `/instrument/play_pattern`
 4. `instrument_node` executes steps sequentially and publishes:
    - simple motor commands on `/spike/cmd`
    - advanced actions on `/spike/action`
-5. `spike_hw_client_node` forwards those to host agent HTTP endpoints.
-6. Host agent executes USB REPL commands on SPIKE hub.
-7. Bridge publishes `/spike/state`; instrument publishes `/status` and `/done`.
+5. `spike_hw_client_node` forwards those to host agent HTTP endpoints
+6. Host agent executes USB REPL commands on SPIKE hub
+7. Bridge publishes `/spike/state`; instrument publishes `/status` and `/done`
 
 
 ### Visualizing the Graph
