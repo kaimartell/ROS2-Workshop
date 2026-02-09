@@ -63,7 +63,7 @@ USB auto-selection notes:
 This step may take a few minutes for the container to install all dependencies
 
 
-3. In container terminal #1, launch once (idle-ready):
+3. In container terminal #1, launch once:
 
 ```bash
 ros2 launch spike_workshop_instrument instrument.launch.py
@@ -73,7 +73,7 @@ ros2 launch spike_workshop_instrument instrument.launch.py
 4. Open a third terminal window and enter the docker container with:
 
 ```bash
-docker exec -it spike-workshop-participant bash
+docker exec -it spikews bash
 ```
 
 
@@ -95,19 +95,15 @@ Keep `ros2 launch spike_workshop_instrument instrument.launch.py` running in one
 ros2 service call /instrument/play_pattern spike_workshop_interfaces/srv/PlayPattern "{pattern_name: 'pulse_4', pattern_path: ''}"
 ```
 
-Success criteria:
-- `list_patterns` includes `presets/pulse_4`
-- `play_pattern` returns `accepted: true`
-
-### 2) Generate a 4-bar score (ROS-first)
+### 2) Generate a 4-bar score
 
 Score format:
 - 4 bars separated by `|`
-- 4 tokens per bar (16 beats total)
-- motor lane tokens: `F` (forward), `B` (backward), `S` (stop)
-- melody lane tokens: note names (`C4`, `A#4`) or Hz (`440`) or rest (`-`)
+- 4 beats per bar (16 beats total)
+- motor beats: `F` (forward), `B` (backward), `S` (stop)
+- melody notes: note names (`C4`, `A#4`) or Hz (`440`) or rest (`-`)
 
-Generate a score with using a service call, with parameters:
+Generate a score with using a service call, with parameters, ex:
 
 ```bash
 ros2 service call /instrument/generate_score spike_workshop_interfaces/srv/GenerateScore \
@@ -122,27 +118,43 @@ ros2 service call /instrument/generate_score spike_workshop_interfaces/srv/Gener
   }"
 ```
 
-Motor-only example (leave melody empty):
+Motor-only ex:
 
 ```bash
 ros2 service call /instrument/generate_score spike_workshop_interfaces/srv/GenerateScore \
-"{name: 'motor_only', bpm: 100.0, repeats: 1, speed: 0.6, motor: 'F F S S | B B S S | F F S S | B B S S', melody: '', volume: 60}"
+  "{
+    name: 'motor_only', \
+    bpm: 100.0, \
+    repeats: 1, \
+    speed: 0.6, \
+    motor: 'F F S S | B B S S | F F S S | B B S S', \
+    melody: '', \
+    volume: 60
+  }"
 ```
 
-Melody-only example (leave motor empty):
+Melody-only ex:
 
 ```bash
-ros2 service call /instrument/generate_score spike_workshop_interfaces/srv/GenerateScore "{name: 'melody_only', bpm: 110.0, repeats: 1, speed: 0.5, motor: '', melody: 'C4 D4 E4 F4 | G4 A4 B4 C5 | C5 B4 A4 G4 | F4 E4 D4 C4', volume: 70}"
+ros2 service call /instrument/generate_score spike_workshop_interfaces/srv/GenerateScore \
+  "{
+    name: 'melody_only', \
+    bpm: 110.0, \
+    repeats: 1, \
+    speed: 0.5, \
+    motor: '', \
+    melody: 'C4 D4 E4 F4 | G4 A4 B4 C5 | C5 B4 A4 G4 | F4 E4 D4 C4', \
+    volume: 70
+  }"
 ```
 
-Success criteria:
+Success:
 - response includes `ok: true`
-- YAML is written under `/patterns/user/<name>.yaml`
 
 ### 3) Play your score
 
 ```bash
-ros2 service call /instrument/play_pattern spike_workshop_interfaces/srv/PlayPattern "{pattern_name: 'my_score', pattern_path: ''}"
+ros2 service call /instrument/play_pattern spike_workshop_interfaces/srv/PlayPattern "{pattern_name: 'Your_score_name', pattern_path: ''}"
 ```
 
 Success criteria:
@@ -160,7 +172,7 @@ Success criteria:
 - response includes `success: true`
 - motor stops immediately (best effort)
 
-### 5) Debugging / ROS introspection
+### 5) Debugging / ROS Commands
 
 ```bash
 ros2 node list
@@ -194,26 +206,167 @@ No motion:
 ros2 service call /spike/ping std_srvs/srv/Trigger "{}"
 ```
 
-No beep:
-- hub firmware must provide `hub.sound.beep`
-- try a melody step in score and check host agent logs for sound errors
-
-Manual emergency stop:
+Manual stop:
 
 ```bash
-curl -s -X POST http://localhost:8000/motor/stop \
-  -H "Content-Type: application/json" \
-  -d '{"port":"A"}'
+ros2 service call /instrument/stop std_srvs/srv/Trigger "{}"
 ```
 
-Core presets shipped for workshop:
-- `pulse_4`
-- `score_motor_basic`
-- `score_call_response`
+## ROS 2 Learning Appendix
 
-Backward compatibility:
-- `/instrument/generate_pattern` still works.
-- For `template_name: score_4bar`, legacy fields (`duration_sec`, `gap_sec`, `degrees`) are ignored.
+### What ROS2 Is (Mental Model)
 
-`pattern_wizard` and `pattern_menu` are deprecated and intentionally excluded from the workshop flow.
+ROS2 is a runtime where small programs called **nodes** exchange data
+
+Core components:
+- **Node**: a process with a name and responsibilities
+- **Topic**: a named stream of messages (publish and subscribe)
+- **Service**: request/response route for commands that need a reply
+- **Launch file**: starts multiple nodes with parameters in one command
+
+
+- Use **topics** for continuous states and events (`/status`, `/spike/state`).
+- Use **services** for explicit commands (`/instrument/generate_score`, `/instrument/play_pattern`).
+
+### How Discovery Works
+
+ROS 2 nodes auto-discover each other on the same DDS domain.
+
+In this workshop:
+- `ROS_DOMAIN_ID=25` keeps your workshop isolated from nearby ROS traffic
+- Container and host (your mac) communicate for hardware via HTTP (`host.docker.internal`), while ROS stays inside the container
+
+### Commands Explained
+
+`ros2 node list`
+- Shows running nodes in the graph
+- Expected: `instrument_node`, `spike_hw_client_node`.
+
+`ros2 topic list`
+- Shows available pub/sub channels
+- Expected: `/actuate`, `/status`, `/done`, `/spike/state`, `/spike/cmd`, `/spike/action`.
+
+`ros2 service list`
+- Shows callable request/response endpoints
+- Expected services include:
+  - `/spike/ping`
+  - `/instrument/list_patterns`
+  - `/instrument/generate_score`
+  - `/instrument/play_pattern`
+  - `/instrument/stop`
+
+### Example Commands
+
+`ros2 service call /spike/ping std_srvs/srv/Trigger "{}"`
+- Asks hardware bridge to verify host agent connectivity
+- Useful first check before trying motion
+
+`ros2 service call /instrument/generate_score ...`
+- Converts your compact 4-bar score into YAML pattern steps under `/patterns/user`
+- Returns whether generation succeeded and where the file was written
+
+`ros2 service call /instrument/play_pattern ...`
+- Starts playing your pattern on the existing graph
+
+`ros2 service call /instrument/stop std_srvs/srv/Trigger "{}"`
+- Stops active playback and sends stop commands
+
+`ros2 topic echo /status`
+- Live textual status stream from `instrument_node`
+- Great for understanding step progression and current state
+
+`ros2 topic echo /done`
+- Emits completion event when a pattern finishes
+
+`ros2 topic echo /spike/state`
+- Bridge status from host agent/hub side
+
+### What the ROS Graph Means
+
+A ROS graph is a map of:
+- which nodes exist
+- which topics/services connect them
+
+Think of it as a wiring diagram:
+- nodes are components
+- topic arrows are signal wires
+- services are control calls
+
+### This Workshop Graph
+
+Launch command:
+
+```bash
+ros2 launch spike_workshop_instrument instrument.launch.py
+```
+
+Starts:
+- `instrument_node`
+- `spike_hw_client_node`
+
+Graph sketch:
+
+```text
+                     (service calls from your terminal)
+                             |
+                             v
+                    /instrument/generate_score
+                    /instrument/play_pattern
+                    /instrument/stop
+                    /instrument/list_patterns
+                             |
+                             v
+                      [instrument_node]
+                         |         \
+           /spike/cmd ---+          \--- /spike/action
+                         |                 (actions, beep, etc.)
+                         v
+                   [spike_hw_client_node] ----HTTP----> [host_agent on macOS]
+                         |
+                    /spike/state
+                         |
+                      [instrument_node]
+
+   [instrument_node] -> /status (progress/state text)
+   [instrument_node] -> /done   (completion event)
+```
+
+### Data Flow
+
+1. You call `/instrument/generate_score` with `motor` and optional `melody` strings
+2. `instrument_node` parses score bars/beats and writes normalized YAML to `/patterns/user/<name>.yaml`.
+3. You call `/instrument/play_pattern`.
+4. `instrument_node` executes steps sequentially and publishes:
+   - simple motor commands on `/spike/cmd`
+   - advanced actions on `/spike/action`
+5. `spike_hw_client_node` forwards those to host agent HTTP endpoints.
+6. Host agent executes USB REPL commands on SPIKE hub.
+7. Bridge publishes `/spike/state`; instrument publishes `/status` and `/done`.
+
+
+### Visualizing the Graph
+
+If using a native Linux environment or a VM running Linux, the ROS Graph can be visualized using
+
+```bash
+rqt_graph
+```
+
+However, if using Mac, ROS tools are unavailable, unless using services like Xforwarding
+
+### Message and Service Types You Use Most
+
+Topics:
+- `/status` -> `std_msgs/msg/String`
+- `/done` -> `std_msgs/msg/Empty`
+- `/spike/state` -> `std_msgs/msg/String`
+- `/spike/cmd` -> `std_msgs/msg/String` (JSON payload)
+- `/spike/action` -> `std_msgs/msg/String` (JSON payload)
+
+Services:
+- `/spike/ping` -> `std_srvs/srv/Trigger`
+- `/instrument/list_patterns` -> `std_srvs/srv/Trigger`
+- `/instrument/stop` -> `std_srvs/srv/Trigger`
+- `/instrument/play_pattern` -> `spike_workshop_interfaces/srv/PlayPattern`
+- `/instrument/generate_score` -> `spike_workshop_interfaces/srv/GenerateScore`
 

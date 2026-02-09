@@ -4,7 +4,7 @@ services:
       context: .
       dockerfile: docker/Dockerfile
     image: ${SPIKE_WORKSHOP_IMAGE:-spike_workshop_participant:latest}
-    container_name: spike_workshop_participant
+    container_name: spikews
     stdin_open: true
     tty: true
     environment:
@@ -20,7 +20,7 @@ services:
       context: .
       dockerfile: docker/Dockerfile
     image: ${SPIKE_WORKSHOP_IMAGE:-spike_workshop_participant:latest}
-    container_name: spike_workshop_participant_dev
+    container_name: spikews-dev
     stdin_open: true
     tty: true
     environment:

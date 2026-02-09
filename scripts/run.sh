@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 IMAGE_NAME="${SPIKE_WORKSHOP_IMAGE:-spike_workshop_participant:latest}"
-CONTAINER_NAME="${SPIKE_WORKSHOP_CONTAINER:-spike_workshop_participant}"
+CONTAINER_NAME="${SPIKE_WORKSHOP_CONTAINER:-spikews}"
 SKIP_BUILD="${SPIKE_WORKSHOP_SKIP_BUILD:-0}"
 
 "${ROOT_DIR}/scripts/preflight.sh"
