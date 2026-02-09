@@ -216,11 +216,11 @@ ros2 service call /instrument/stop std_srvs/srv/Trigger "{}"
 
 ### What ROS2 Is (Mental Model)
 
-ROS2 is a runtime where small programs called **nodes** exchange data
+ROS2 is a structured environment where small programs called **nodes** exchange data
 
 Core components:
 - **Node**: a process with a name and responsibilities
-- **Topic**: a named stream of messages (publish and subscribe)
+- **Topic**: a named stream of messages (publish and subscribe structure)
 - **Service**: request/response route for commands that need a reply
 - **Launch file**: starts multiple nodes with parameters in one command
 
