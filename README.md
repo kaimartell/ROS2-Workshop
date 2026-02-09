@@ -8,21 +8,27 @@ This repository gives participants a ROS-first workshop flow:
 - generate/list/play/stop patterns through ROS services
 - keep shareable YAML patterns on disk under `patterns/`
 
-## Why This Is ROS
+## ROS
 
-You interact with a live ROS graph:
+ROS graph:
 - nodes: `instrument_node`, `spike_hw_client_node`
 - topics: `/actuate`, `/status`, `/done`, `/spike/state`
 - services: `/spike/ping`, `/instrument/list_patterns`, `/instrument/generate_pattern`, `/instrument/play_pattern`, `/instrument/stop`
 
-Instead of restarting launch files for each pattern, you control playback via service calls.
-
 ## Pre-Workshop Setup
 
 - Install Docker Desktop and start it: https://docs.docker.com/desktop/setup/install/mac-install/
+  - Pay attention to Silicon vs Intel chip
+  - Follow install instructions, can skip account creation
+  - Verify CLI install with
+  ```bash
+  docker version
+  ```
 - Install Python 3.9+.
 - Connect LEGO SPIKE Prime hub + motor + USB data cable.
 - Clone this repo.
+
+
 
 ```bash
 git clone https://github.com/kaimartell/ROS2-Workshop.git
@@ -33,7 +39,7 @@ python3 -m pip install -e ".[spike_usb]"
 cd ..
 ```
 
-## 10-Minute ROS-First Quick Start
+## Start Guide
 
 1. Start host agent:
 
