@@ -51,8 +51,9 @@ USB auto-selection notes:
 - If multiple distinct devices are present, the script asks for explicit `SPIKE_SERIAL`.
 - List candidates without starting:
   - `./scripts/start_host_agent_usb.sh --list`
-- Preview command without starting:
+- Get command without shell script:
   - `./scripts/start_host_agent_usb.sh --dry-run`
+  - Run outputted python3 command after DRY RUN:
 
 2. In another terminal window, start container:
 
@@ -103,23 +104,26 @@ Score format:
 - motor lane tokens: `F` (forward), `B` (backward), `S` (stop)
 - melody lane tokens: note names (`C4`, `A#4`) or Hz (`440`) or rest (`-`)
 
-Generate a score with the dedicated service:
+Generate a score with using a service call, with parameters:
 
 ```bash
 ros2 service call /instrument/generate_score spike_workshop_interfaces/srv/GenerateScore \
-    "{name: 'my_score', \
+  "{
+    name: 'my_score', \
     bpm: 120.0, \
     repeats: 2, \
     speed: 0.5, \
     motor: 'F S F S | F S F S | B S B S | B S B S', \
     melody: 'C4 D4 E4 F4 | G4 A4 B4 C5 | - - G4 - | C5 - - -', \
-    volume: 60}"
+    volume: 60
+  }"
 ```
 
 Motor-only example (leave melody empty):
 
 ```bash
-ros2 service call /instrument/generate_score spike_workshop_interfaces/srv/GenerateScore "{name: 'motor_only', bpm: 100.0, repeats: 1, speed: 0.6, motor: 'F F S S | B B S S | F F S S | B B S S', melody: '', volume: 60}"
+ros2 service call /instrument/generate_score spike_workshop_interfaces/srv/GenerateScore \
+"{name: 'motor_only', bpm: 100.0, repeats: 1, speed: 0.6, motor: 'F F S S | B B S S | F F S S | B B S S', melody: '', volume: 60}"
 ```
 
 Melody-only example (leave motor empty):
@@ -210,20 +214,3 @@ Backward compatibility:
 
 `pattern_wizard` and `pattern_menu` are deprecated and intentionally excluded from the workshop flow.
 
-## Participant Fork/Clone
-
-```bash
-git clone https://github.com/<their-user>/spike-ros-workshop.git
-cd spike-ros-workshop
-```
-
-## Maintainer: Publish To GitHub
-
-```bash
-git init
-git add .
-git commit -m "Initial workshop packaging"
-git remote add origin https://github.com/<your-org-or-user>/spike-ros-workshop.git
-git branch -M main
-git push -u origin main
-```
