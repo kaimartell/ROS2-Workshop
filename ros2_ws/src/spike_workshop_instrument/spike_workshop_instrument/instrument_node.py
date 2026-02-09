@@ -2,17 +2,33 @@ import json
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import rclpy
 from rclpy.node import Node
+from spike_workshop_interfaces.srv import GeneratePattern, PlayPattern
 from std_msgs.msg import Empty, String
+from std_srvs.srv import Trigger
 
 from spike_workshop_instrument.behaviors import build_steps
 from spike_workshop_instrument.pattern_schema import (
     PatternValidationError,
     load_and_validate_pattern,
 )
+from spike_workshop_instrument.pattern_templates import (
+    TEMPLATES,
+    build_template_pattern,
+    ensure_yaml_output_path,
+    write_pattern_yaml,
+)
+
+STATE_IDLE_POLL_TIMEOUT_SEC = 6.0
+DEFAULT_BLOCKING_WAIT_SEC = {
+    "run_for_degrees": 0.8,
+    "run_to_absolute_position": 1.0,
+    "run_to_relative_position": 1.0,
+    "reset_relative_position": 0.2,
+}
 
 
 class InstrumentNode(Node):
@@ -34,6 +50,7 @@ class InstrumentNode(Node):
                 ("seed", 0),
                 ("sequence_file", ""),
                 ("pattern_file", ""),
+                ("allow_override", False),
                 ("cmd_topic", "/spike/cmd"),
                 ("action_topic", "/spike/action"),
                 ("done_topic", "/done"),
@@ -55,6 +72,19 @@ class InstrumentNode(Node):
             String, "/spike/state", self._on_spike_state, 10
         )
 
+        self._play_pattern_srv = self.create_service(
+            PlayPattern, "/instrument/play_pattern", self._on_play_pattern
+        )
+        self._stop_srv = self.create_service(Trigger, "/instrument/stop", self._on_stop)
+        self._list_patterns_srv = self.create_service(
+            Trigger, "/instrument/list_patterns", self._on_list_patterns
+        )
+        self._generate_pattern_srv = self.create_service(
+            GeneratePattern,
+            "/instrument/generate_pattern",
+            self._on_generate_pattern,
+        )
+
         self._status_timer = self.create_timer(0.5, self._publish_status)
 
         self._lock = threading.Lock()
@@ -70,9 +100,18 @@ class InstrumentNode(Node):
         self._metronome_beat_period = 0.5
         self._metronome_on_duration = 0.1
         self._metronome_beat_count = 0
+        self._spike_state_value = "unknown"
+        self._spike_state_counter = 0
+        self._spike_state_last_update_monotonic = 0.0
+        self._active_pattern_path = ""
 
-        self.get_logger().info(
-            "instrument_node ready. Trigger behavior with: ros2 topic pub /actuate std_msgs/msg/Empty '{}' -1"
+        self._safe_log(
+            "info",
+            "instrument_node ready. Services: /instrument/list_patterns, /instrument/generate_pattern, /instrument/play_pattern, /instrument/stop",
+        )
+        self._safe_log(
+            "info",
+            "Trigger topic still available: ros2 topic pub /actuate std_msgs/msg/Empty '{}' -1",
         )
 
     def _context_ok(self) -> bool:
@@ -92,28 +131,169 @@ class InstrumentNode(Node):
         else:
             logger.info(message)
 
-    def _on_actuate(self, _msg: Empty) -> None:
-        mode = str(self.get_parameter("mode").value).strip().lower()
+    def _pattern_roots(self) -> List[Tuple[str, Path]]:
+        return [
+            ("user", Path("/patterns/user")),
+            ("presets", Path("/patterns/presets")),
+            ("builtin", Path("/ros2_ws/src/spike_workshop_instrument/config/patterns")),
+        ]
+
+    def _discover_patterns(self) -> List[str]:
+        entries: List[str] = []
+        for scope, root in self._pattern_roots():
+            if not root.is_dir():
+                continue
+            for path in sorted(root.glob("*.yaml")):
+                entries.append(f"{scope}/{path.stem}")
+        return entries
+
+    def _resolve_pattern_name(self, pattern_name: str) -> Path:
+        raw = str(pattern_name or "").strip()
+        if not raw:
+            raise PatternValidationError("pattern_name must be provided")
+
+        requested = Path(raw)
+        if requested.is_absolute():
+            return self._resolve_pattern_path(str(requested))
+
+        names: List[str] = []
+        if raw.lower().endswith(".yaml"):
+            names.append(raw)
+            stem = raw[:-5]
+            if stem:
+                names.append(stem)
+        else:
+            names.append(raw)
+            names.append(f"{raw}.yaml")
+
+        # Allow explicit scope prefix: user/foo or presets/foo.
+        if "/" in raw:
+            scope, suffix = raw.split("/", 1)
+            suffix = suffix.strip()
+            for candidate_scope, root in self._pattern_roots():
+                if scope.strip().lower() != candidate_scope:
+                    continue
+                scoped_names = []
+                if suffix.lower().endswith(".yaml"):
+                    scoped_names.append(suffix)
+                else:
+                    scoped_names.append(suffix)
+                    scoped_names.append(f"{suffix}.yaml")
+                for name in scoped_names:
+                    candidate = root / name
+                    if candidate.is_file():
+                        return candidate
+                raise PatternValidationError(
+                    f"pattern '{raw}' not found in {root}"
+                )
+
+        for _scope, root in self._pattern_roots():
+            for name in names:
+                candidate = root / name
+                if candidate.is_file():
+                    return candidate
+
+        raise PatternValidationError(
+            f"pattern '{raw}' not found in /patterns/user or /patterns/presets"
+        )
+
+    def _resolve_pattern_path(self, pattern_file: str) -> Path:
+        raw = str(pattern_file or "").strip()
+        if not raw:
+            raise PatternValidationError("pattern_file must be set")
+
+        requested = Path(raw).expanduser()
+        if requested.is_file():
+            return requested
+
+        candidates = [
+            Path.cwd() / requested,
+            Path("/patterns") / requested,
+            Path("/ros2_ws") / requested,
+            Path("/ros2_ws/src/spike_workshop_instrument/config/patterns") / requested.name,
+        ]
+        for candidate in candidates:
+            if candidate.is_file():
+                return candidate
+
+        raise PatternValidationError(f"pattern file not found: {requested}")
+
+    def _prepare_start(self, *, run_label: str, allow_override: bool) -> Tuple[bool, str]:
+        need_stop = False
         with self._lock:
             if self._running:
-                self._last_action = "busy"
-                busy = True
-            else:
-                self._running = True
-                self._last_action = "starting"
-                busy = False
+                if not allow_override:
+                    self._last_action = "busy"
+                    return False, "instrument busy; stop current playback first"
+                need_stop = True
 
-        if busy:
-            self._safe_log("info", "Received /actuate while running; ignoring trigger.")
-            self._publish_status()
+        if need_stop:
+            self._stop_active_playback(reason=f"override:{run_label}", wait_timeout=2.0)
+
+        with self._lock:
+            if self._running:
+                return False, "instrument still running"
+            self._stop_event.clear()
+            self._running = True
+            self._last_action = f"starting {run_label}"
+        self._publish_status()
+        return True, "accepted"
+
+    def _publish_best_effort_stop(self) -> None:
+        if not self._context_ok():
+            return
+        self._publish_action({"type": "stop"}, log_command=False)
+        self._publish_motor_command(speed=0.0, duration=0.0, log_command=False)
+
+    def _stop_active_playback(self, *, reason: str, wait_timeout: float = 1.5) -> str:
+        self._stop_event.set()
+        self._cancel_metronome_timers()
+
+        worker: Optional[threading.Thread]
+        with self._lock:
+            worker = self._worker
+
+        if (
+            worker is not None
+            and worker.is_alive()
+            and worker is not threading.current_thread()
+        ):
+            worker.join(timeout=max(0.1, wait_timeout))
+
+        with self._lock:
+            was_running = self._running
+            self._running = False
+            self._worker = None
+            self._active_pattern_path = ""
+            self._last_action = f"stopped ({reason})"
+
+        self._publish_best_effort_stop()
+        self._publish_status()
+
+        if was_running:
+            return "playback stopped"
+        return "instrument already idle; stop command forwarded"
+
+    def _start_worker(self, target, *, name: str, args: Tuple[Any, ...] = ()) -> None:
+        worker = threading.Thread(target=target, args=args, name=name, daemon=True)
+        with self._lock:
+            self._worker = worker
+        worker.start()
+
+    def _on_actuate(self, _msg: Empty) -> None:
+        mode = str(self.get_parameter("mode").value).strip().lower()
+        allow_override = bool(self.get_parameter("allow_override").value)
+
+        ok, message = self._prepare_start(run_label=f"actuate:{mode}", allow_override=allow_override)
+        if not ok:
+            self._safe_log("info", f"Received /actuate but ignored: {message}")
             return
 
         if mode == "metronome":
             self._start_metronome()
-        else:
-            self._worker = threading.Thread(target=self._run_behavior, daemon=True)
-            self._worker.start()
-        self._publish_status()
+            return
+
+        self._start_worker(self._run_behavior, name="instrument_behavior_worker")
 
     def _cancel_metronome_timers(self) -> None:
         if self._metronome_timer is not None:
@@ -194,17 +374,135 @@ class InstrumentNode(Node):
                 return
         self._publish_motor_command(speed=0.0, duration=0.0, log_command=False)
 
+    def _on_play_pattern(
+        self,
+        request: PlayPattern.Request,
+        response: PlayPattern.Response,
+    ) -> PlayPattern.Response:
+        allow_override = bool(self.get_parameter("allow_override").value)
+
+        try:
+            if str(request.pattern_path or "").strip():
+                resolved = self._resolve_pattern_path(str(request.pattern_path))
+            else:
+                resolved = self._resolve_pattern_name(str(request.pattern_name))
+            _validated = load_and_validate_pattern(str(resolved))
+        except Exception as exc:  # noqa: BLE001
+            response.accepted = False
+            response.message = f"pattern resolve/validate failed: {exc}"
+            return response
+
+        ok, message = self._prepare_start(
+            run_label=f"pattern:{resolved.name}", allow_override=allow_override
+        )
+        if not ok:
+            response.accepted = False
+            response.message = message
+            return response
+
+        with self._lock:
+            self._active_pattern_path = str(resolved)
+
+        self._start_worker(
+            self._run_pattern_from_path,
+            name="instrument_pattern_worker",
+            args=(resolved, "service"),
+        )
+
+        response.accepted = True
+        response.message = f"playing pattern {resolved}"
+        return response
+
+    def _on_stop(
+        self,
+        _request: Trigger.Request,
+        response: Trigger.Response,
+    ) -> Trigger.Response:
+        message = self._stop_active_playback(reason="service stop", wait_timeout=2.0)
+        response.success = True
+        response.message = message
+        return response
+
+    def _on_list_patterns(
+        self,
+        _request: Trigger.Request,
+        response: Trigger.Response,
+    ) -> Trigger.Response:
+        entries = self._discover_patterns()
+        response.success = True
+        response.message = "\n".join(entries)
+        return response
+
+    def _on_generate_pattern(
+        self,
+        request: GeneratePattern.Request,
+        response: GeneratePattern.Response,
+    ) -> GeneratePattern.Response:
+        template = str(request.template_name or "").strip().lower()
+        if template not in TEMPLATES:
+            response.ok = False
+            response.message = f"unsupported template '{template}', expected one of {list(TEMPLATES)}"
+            response.written_path = ""
+            return response
+
+        output_name = str(request.output_name or "").strip() or f"{template}_{int(time.time())}"
+        output_dir = str(request.output_dir or "").strip() or "/patterns/user"
+
+        try:
+            pattern = build_template_pattern(
+                template_name=template,
+                output_name=output_name,
+                speed=float(request.speed),
+                duration_sec=float(request.duration_sec),
+                gap_sec=float(request.gap_sec),
+                repeats=int(request.repeats),
+                bpm=float(request.bpm),
+                degrees=int(request.degrees),
+                motor_score=str(request.motor_score),
+                melody_score=str(request.melody_score),
+                beep_volume=int(request.beep_volume),
+            )
+            output_path = ensure_yaml_output_path(output_dir=output_dir, output_name=output_name)
+            write_pattern_yaml(output_path, pattern)
+            _validated = load_and_validate_pattern(str(output_path))
+        except Exception as exc:  # noqa: BLE001
+            response.ok = False
+            response.message = f"generate failed: {exc}"
+            response.written_path = ""
+            return response
+
+        response.ok = True
+        response.message = (
+            f"generated template={template} as {output_path.name}; "
+            f"play with /instrument/play_pattern pattern_name: '{output_path.stem}'"
+        )
+        response.written_path = str(output_path)
+        return response
+
     def _run_behavior(self) -> None:
         params = self._read_behavior_params()
         mode = str(params["mode"])
         normalized_mode = mode.strip().lower()
 
         if normalized_mode == "metronome":
-            # Metronome is continuous and timer-driven via _start_metronome().
+            # Metronome is timer-driven via _start_metronome().
             return
 
         if normalized_mode == "pattern":
-            self._run_pattern(params)
+            pattern_file = str(params.get("pattern_file", ""))
+            try:
+                resolved = self._resolve_pattern_path(pattern_file)
+            except Exception as exc:  # noqa: BLE001
+                self._safe_log("error", f"Failed to resolve pattern from mode=pattern: {exc}")
+                with self._lock:
+                    self._running = False
+                    self._last_action = f"pattern error: {exc}"
+                self._publish_status()
+                return
+
+            with self._lock:
+                self._active_pattern_path = str(resolved)
+            self._run_pattern_from_path(resolved, "actuate")
             return
 
         self._run_standard_behavior(params)
@@ -252,44 +550,24 @@ class InstrumentNode(Node):
         with self._lock:
             self._running = False
             self._last_action = "idle"
+            self._worker = None
 
-        self._publish_motor_command(speed=0.0, duration=0.0, log_command=False)
+        self._publish_best_effort_stop()
         self._publish_status()
 
     @staticmethod
     def _coerce_speed(value: Any) -> float:
         return max(-1.0, min(1.0, float(value)))
 
-    def _resolve_pattern_path(self, pattern_file: str) -> Path:
-        raw = str(pattern_file or "").strip()
-        if not raw:
-            raise PatternValidationError("pattern_file must be set when mode=pattern")
-
-        requested = Path(raw).expanduser()
-        if requested.is_file():
-            return requested
-
-        candidates = [
-            Path.cwd() / requested,
-            Path("/patterns") / requested,
-            Path("/ros2_ws") / requested,
-            Path("/ros2_ws/src/spike_workshop_instrument/config/patterns") / requested.name,
-        ]
-        for candidate in candidates:
-            if candidate.is_file():
-                return candidate
-
-        raise PatternValidationError(f"pattern file not found: {requested}")
-
-    def _run_pattern(self, params: Dict[str, Any]) -> None:
-        pattern_file = str(params.get("pattern_file", ""))
+    def _run_pattern_from_path(self, resolved: Path, source: str) -> None:
         try:
-            resolved = self._resolve_pattern_path(pattern_file)
             pattern = load_and_validate_pattern(str(resolved))
         except Exception as exc:  # noqa: BLE001
-            self._safe_log("error", f"Failed to load pattern: {exc}")
+            self._safe_log("error", f"Failed to load pattern from {resolved}: {exc}")
             with self._lock:
                 self._running = False
+                self._worker = None
+                self._active_pattern_path = ""
                 self._last_action = f"pattern error: {exc}"
             self._publish_status()
             return
@@ -298,7 +576,7 @@ class InstrumentNode(Node):
         steps = pattern.get("steps", [])
         self._safe_log(
             "info",
-            f"Executing pattern={pattern_name} from {resolved} with {len(steps)} steps",
+            f"Executing pattern={pattern_name} from {resolved} source={source} with {len(steps)} steps",
         )
 
         success = True
@@ -319,23 +597,22 @@ class InstrumentNode(Node):
 
         with self._lock:
             self._running = False
+            self._worker = None
+            self._active_pattern_path = ""
             self._last_action = "idle"
 
-        self._publish_action(
-            {
-                "type": "stop",
-                "port": str(pattern.get("defaults", {}).get("motor_port", "A")),
-                "stop_action": str(pattern.get("defaults", {}).get("stop_action", "coast")),
-            },
-            log_command=False,
-        )
-        self._publish_motor_command(speed=0.0, duration=0.0, log_command=False)
+        self._publish_best_effort_stop()
         self._publish_status()
 
     def _execute_pattern_step(self, *, step: Dict[str, Any], index: int, total: int) -> bool:
         step_type = str(step.get("type", "")).strip().lower()
         if not step_type:
             return False
+
+        gap_sec = max(0.0, float(step.get("gap_sec", 0.0)))
+        wait_override = self._optional_nonnegative_float(step.get("wait_sec"))
+
+        self._safe_log("info", f"Pattern step {index}/{total}: type={step_type}")
 
         if step_type == "sleep":
             duration_sec = max(0.0, float(step.get("duration_sec", 0.0)))
@@ -344,7 +621,100 @@ class InstrumentNode(Node):
                     f"pattern sleep step {index}/{total} duration={duration_sec:.2f}s"
                 )
             self._publish_status()
-            return self._sleep_with_cancel(duration_sec)
+            if not self._sleep_pattern(
+                duration_sec,
+                reason=f"step {index}/{total} sleep",
+            ):
+                return False
+            return self._apply_step_gap(gap_sec=gap_sec, index=index, total=total)
+
+        if step_type == "run_for_time":
+            speed = self._coerce_speed(step.get("velocity", 0.0))
+            duration_sec = max(0.0, float(step.get("duration_sec", 0.0)))
+            port = str(step.get("port", "A"))
+            stop_action = str(step.get("stop_action", "coast"))
+
+            run_action: Dict[str, Any] = {
+                "type": "run",
+                "speed": speed,
+                "port": port,
+            }
+            if "comment" in step:
+                run_action["comment"] = str(step["comment"])
+
+            if not self._publish_action(run_action):
+                return False
+
+            with self._lock:
+                self._last_action = (
+                    f"pattern run_for_time step {index}/{total} "
+                    f"speed={speed:.2f} duration={duration_sec:.2f}s"
+                )
+            self._publish_status()
+
+            if not self._sleep_pattern(
+                duration_sec,
+                reason=f"step {index}/{total} run_for_time duration",
+            ):
+                return False
+
+            stop_payload = {
+                "type": "stop",
+                "port": port,
+                "stop_action": stop_action,
+            }
+            if not self._publish_action(stop_payload):
+                return False
+            self._publish_motor_command(speed=0.0, duration=0.0, log_command=False)
+
+            if wait_override is not None and wait_override > 0.0:
+                if not self._sleep_pattern(
+                    wait_override,
+                    reason=f"step {index}/{total} wait_sec after run_for_time",
+                ):
+                    return False
+
+            return self._apply_step_gap(gap_sec=gap_sec, index=index, total=total)
+
+        if step_type == "beep":
+            freq_hz = int(step.get("freq_hz", 440))
+            duration_ms = int(step.get("duration_ms", 120))
+            volume = int(step.get("volume", 50))
+            beep_action: Dict[str, Any] = {
+                "type": "beep",
+                "freq_hz": freq_hz,
+                "duration_ms": duration_ms,
+                "volume": volume,
+            }
+            if "comment" in step:
+                beep_action["comment"] = str(step["comment"])
+
+            self._safe_log(
+                "info",
+                f"Beep freq={freq_hz}Hz duration={duration_ms}ms volume={volume}",
+            )
+
+            if not self._publish_action(beep_action):
+                return False
+
+            with self._lock:
+                self._last_action = (
+                    f"pattern beep step {index}/{total} "
+                    f"freq={freq_hz}Hz duration={duration_ms}ms volume={volume}"
+                )
+            self._publish_status()
+
+            wait_after_sec = (
+                wait_override if wait_override is not None else max(0.0, float(duration_ms) / 1000.0)
+            )
+            if wait_after_sec > 0.0:
+                if not self._sleep_pattern(
+                    wait_after_sec,
+                    reason=f"step {index}/{total} beep wait",
+                ):
+                    return False
+
+            return self._apply_step_gap(gap_sec=gap_sec, index=index, total=total)
 
         action: Dict[str, Any] = {"type": step_type}
 
@@ -378,16 +748,119 @@ class InstrumentNode(Node):
         with self._lock:
             self._last_action = f"pattern step {index}/{total} type={step_type}"
         self._publish_status()
-        return True
+
+        if step_type in {"run_for_degrees", "run_to_absolute_position", "run_to_relative_position"}:
+            if wait_override is not None:
+                if not self._sleep_pattern(
+                    wait_override,
+                    reason=f"step {index}/{total} explicit wait_sec",
+                ):
+                    return False
+            else:
+                state_counter_before = self._get_spike_state_counter()
+                if not self._wait_for_step_idle_or_default(
+                    step_type=step_type,
+                    state_counter_before=state_counter_before,
+                    index=index,
+                    total=total,
+                ):
+                    return False
+        elif wait_override is not None and wait_override > 0.0:
+            if not self._sleep_pattern(
+                wait_override,
+                reason=f"step {index}/{total} explicit wait_sec",
+            ):
+                return False
+
+        return self._apply_step_gap(gap_sec=gap_sec, index=index, total=total)
 
     def _on_spike_state(self, msg: String) -> None:
         try:
             payload = json.loads(msg.data)
         except json.JSONDecodeError:
             return
-        state = str(payload.get("state", ""))
+        state = str(payload.get("state", "")).strip().lower()
         with self._lock:
             self._host_connected = state not in {"", "unreachable"}
+            self._spike_state_value = state or "unknown"
+            self._spike_state_counter += 1
+            self._spike_state_last_update_monotonic = time.monotonic()
+
+    @staticmethod
+    def _optional_nonnegative_float(value: Any) -> Optional[float]:
+        if value is None:
+            return None
+        try:
+            return max(0.0, float(value))
+        except (TypeError, ValueError):
+            return None
+
+    def _sleep_pattern(self, duration_sec: float, *, reason: str) -> bool:
+        safe_duration = max(0.0, float(duration_sec))
+        if safe_duration <= 0.0:
+            return True
+        self._safe_log("info", f"Pattern sleep {safe_duration:.2f}s ({reason})")
+        return self._sleep_with_cancel(safe_duration)
+
+    def _apply_step_gap(self, *, gap_sec: float, index: int, total: int) -> bool:
+        if gap_sec <= 0.0:
+            return True
+        return self._sleep_pattern(
+            gap_sec,
+            reason=f"step {index}/{total} gap_sec",
+        )
+
+    def _get_spike_state_counter(self) -> int:
+        with self._lock:
+            return self._spike_state_counter
+
+    def _wait_for_step_idle_or_default(
+        self,
+        *,
+        step_type: str,
+        state_counter_before: int,
+        index: int,
+        total: int,
+    ) -> bool:
+        fallback_sec = DEFAULT_BLOCKING_WAIT_SEC.get(step_type, 0.6)
+        with self._lock:
+            has_state = self._spike_state_counter > 0
+
+        if not has_state:
+            self._safe_log(
+                "info",
+                (
+                    f"Pattern step {index}/{total} ({step_type}) has no /spike/state updates yet; "
+                    f"using fallback wait {fallback_sec:.2f}s."
+                ),
+            )
+            return self._sleep_pattern(
+                fallback_sec,
+                reason=f"step {index}/{total} fallback wait (no state)",
+            )
+
+        deadline = time.monotonic() + STATE_IDLE_POLL_TIMEOUT_SEC
+        while time.monotonic() < deadline:
+            if self._stop_event.is_set():
+                return False
+            with self._lock:
+                state_now = self._spike_state_value
+                counter_now = self._spike_state_counter
+            if counter_now > state_counter_before and state_now == "idle":
+                return True
+            time.sleep(0.05)
+
+        self._safe_log(
+            "warning",
+            (
+                f"Pattern step {index}/{total} ({step_type}) timed out waiting for /spike/state idle; "
+                f"using fallback wait {fallback_sec:.2f}s."
+            ),
+        )
+        return self._sleep_pattern(
+            fallback_sec,
+            reason=f"step {index}/{total} fallback wait (state timeout)",
+        )
 
     def _sleep_with_cancel(self, total_seconds: float) -> bool:
         remaining = max(0.0, float(total_seconds))
@@ -447,12 +920,14 @@ class InstrumentNode(Node):
             state = "running" if self._running else "idle"
             last_action = self._last_action
             host_connected = self._host_connected
+            active_pattern_path = self._active_pattern_path
 
         return (
             f"state={state};last_action={last_action};"
             f"participant_id={int(self.get_parameter('participant_id').value)};"
             f"name={str(self.get_parameter('name').value)};"
             f"mode={str(self.get_parameter('mode').value)};"
+            f"active_pattern={active_pattern_path};"
             f"host_connected={str(host_connected).lower()}"
         )
 
@@ -472,21 +947,10 @@ class InstrumentNode(Node):
         if self._status_timer is not None:
             self._status_timer.cancel()
 
-        self._cancel_metronome_timers()
-
-        if self._worker is not None and self._worker.is_alive():
-            self._worker.join(timeout=2.0)
-
-        with self._lock:
-            self._running = False
-            self._last_action = "idle"
+        self._stop_active_playback(reason="shutdown", wait_timeout=1.0)
 
         if self._context_ok():
-            self._publish_action({"type": "stop"}, log_command=False)
-            self._publish_motor_command(speed=0.0, duration=0.0, log_command=False)
-        else:
-            # ROS context already shut down; skip publish to avoid invalid-context errors.
-            pass
+            self._publish_best_effort_stop()
 
 
 def main(args: Optional[list[str]] = None) -> None:

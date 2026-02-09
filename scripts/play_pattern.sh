@@ -17,6 +17,30 @@ shift
 
 QUEUE_POLICY=${QUEUE_POLICY:-fifo}
 CONTAINER_NAME=${SPIKE_WORKSHOP_CONTAINER:-spike_workshop_participant}
+HOST_AGENT_STOP_URL=${HOST_AGENT_STOP_URL:-http://localhost:8000/motor/stop}
+HOST_AGENT_SOUND_STOP_URL=${HOST_AGENT_SOUND_STOP_URL:-http://localhost:8000/sound/stop}
+STOP_MOTOR_PORT=${SPIKE_PORT:-A}
+
+stop_motor_safety() {
+  if ! command -v curl >/dev/null 2>&1; then
+    return 0
+  fi
+  payload=$(printf '{"port":"%s"}' "$STOP_MOTOR_PORT")
+  curl -s -m 1 -X POST "$HOST_AGENT_STOP_URL" \
+    -H "Content-Type: application/json" \
+    -d "$payload" >/dev/null 2>&1 || true
+  curl -s -m 1 -X POST "$HOST_AGENT_SOUND_STOP_URL" \
+    -H "Content-Type: application/json" \
+    -d '{}' >/dev/null 2>&1 || true
+}
+
+on_signal() {
+  echo "Interrupt received, sending best-effort motor stop to $HOST_AGENT_STOP_URL" >&2
+  stop_motor_safety
+  exit 130
+}
+
+trap 'on_signal' INT TERM
 
 resolve_pattern_file() {
   input=$1
@@ -72,11 +96,12 @@ if command -v ros2 >/dev/null 2>&1; then
   fi
 
   echo "Playing pattern: $PATTERN_FILE"
-  exec ros2 launch spike_workshop_instrument instrument.launch.py \
+  ros2 launch spike_workshop_instrument instrument.launch.py \
     mode:=pattern \
     pattern_file:="$PATTERN_FILE" \
     queue_policy:="$QUEUE_POLICY" \
     "$@"
+  exit $?
 fi
 
 if ! command -v docker >/dev/null 2>&1; then
@@ -104,4 +129,5 @@ PF_ESCAPED=$(quote_for_bash "$PATTERN_FILE")
 QP_ESCAPED=$(quote_for_bash "$QUEUE_POLICY")
 
 echo "Playing pattern in container '$CONTAINER_NAME': $PATTERN_FILE"
-exec docker exec -it "$CONTAINER_NAME" bash -lc "source /opt/ros/humble/setup.bash && if [ -f /ros2_ws/install/setup.bash ]; then source /ros2_ws/install/setup.bash; fi && ros2 launch spike_workshop_instrument instrument.launch.py mode:=pattern pattern_file:='$PF_ESCAPED' queue_policy:='$QP_ESCAPED' $EXTRA_ARGS"
+docker exec -it "$CONTAINER_NAME" bash -lc "source /opt/ros/humble/setup.bash && if [ -f /ros2_ws/install/setup.bash ]; then source /ros2_ws/install/setup.bash; fi && ros2 launch spike_workshop_instrument instrument.launch.py mode:=pattern pattern_file:='$PF_ESCAPED' queue_policy:='$QP_ESCAPED' $EXTRA_ARGS"
+exit $?

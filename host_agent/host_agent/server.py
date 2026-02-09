@@ -26,11 +26,14 @@ class HostAgentHTTPServer(ThreadingHTTPServer):
         if hasattr(self.backend, "health"):
             health = self.backend.health()
             if isinstance(health, dict):
+                if "sound_supported" not in health:
+                    health["sound_supported"] = bool(hasattr(self.backend, "sound_beep"))
                 return health
         return {
             "ok": True,
             "backend": getattr(self.backend, "name", "unknown"),
             "spike_connected": True,
+            "sound_supported": bool(hasattr(self.backend, "sound_beep")),
         }
 
     def close_backend(self) -> None:
@@ -290,6 +293,60 @@ class HostAgentRequestHandler(BaseHTTPRequestHandler):
                     self._write_json(HTTPStatus.OK, result)
                 else:
                     self._write_json(HTTPStatus.OK, {"ok": bool(result)})
+                return
+
+            if path == "/sound/beep":
+                try:
+                    freq_hz = int(payload.get("freq_hz", payload.get("freq", 440)))
+                    duration_ms = int(payload.get("duration_ms", payload.get("duration", 120)))
+                    volume = int(payload.get("volume", 50))
+                except (TypeError, ValueError):
+                    self._write_json(
+                        HTTPStatus.OK,
+                        {"accepted": False, "error": "invalid sound/beep payload values"},
+                    )
+                    return
+
+                try:
+                    result = self._invoke_backend(
+                        "sound_beep",
+                        freq_hz=freq_hz,
+                        duration_ms=duration_ms,
+                        volume=volume,
+                    )
+                except Exception:  # noqa: BLE001
+                    logging.exception("Backend sound_beep() failed")
+                    self._write_json(
+                        HTTPStatus.OK,
+                        {"accepted": False, "error": "backend_sound_beep_exception"},
+                    )
+                    return
+
+                response = self._response_from_result(
+                    result,
+                    true_key="accepted",
+                    false_default={"accepted": False},
+                )
+                self._write_json(HTTPStatus.OK, response)
+                return
+
+            if path == "/sound/stop":
+                try:
+                    result = self._invoke_backend("sound_stop")
+                except Exception:  # noqa: BLE001
+                    logging.exception("Backend sound_stop() failed")
+                    self._write_json(
+                        HTTPStatus.OK,
+                        {"stopped": False, "error": "backend_sound_stop_exception"},
+                    )
+                    return
+
+                response = self._response_from_result(
+                    result,
+                    true_key="stopped",
+                    false_default={"stopped": False},
+                )
+                self._write_json(HTTPStatus.OK, response)
                 return
 
             self._write_json(HTTPStatus.NOT_FOUND, {"error": "not_found"})

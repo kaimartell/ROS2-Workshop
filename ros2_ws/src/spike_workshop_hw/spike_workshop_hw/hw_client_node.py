@@ -643,6 +643,28 @@ class SpikeHwClientNode(Node):
             )
             return result, meta, "POST /motor/status", None, action_type
 
+        if action_type == "beep":
+            try:
+                freq_hz = int(action.get("freq_hz", action.get("freq", 440)))
+                duration_ms = int(action.get("duration_ms", action.get("duration", 120)))
+                volume = int(action.get("volume", 50))
+            except (TypeError, ValueError):
+                return (
+                    {"accepted": False, "error": "beep action requires integer freq_hz, duration_ms, volume"},
+                    {"ok": True, "latency_ms": 0.0, "error": ""},
+                    "local action validation",
+                    None,
+                    action_type,
+                )
+
+            result, meta = self._http_client.sound_beep_with_meta(
+                freq_hz=freq_hz,
+                duration_ms=duration_ms,
+                volume=volume,
+                timeout_sec=self._action_http_timeout_sec,
+            )
+            return result, meta, "POST /sound/beep", None, action_type
+
         return (
             {"accepted": False, "error": f"unsupported action type '{action_type}'"},
             {"ok": True, "latency_ms": 0.0, "error": ""},
@@ -751,10 +773,41 @@ class SpikeHwClientNode(Node):
         result = self._http_client.stop_motor()
         return result
 
+    def _best_effort_http_stop(self, timeout_sec: float) -> bool:
+        try:
+            result, _meta = self._http_client.stop_motor_with_meta(timeout_sec=timeout_sec)
+        except Exception as exc:  # noqa: BLE001
+            self._safe_log("warning", f"Shutdown stop request failed: {exc}")
+            return False
+
+        stopped = bool(result.get("stopped", False))
+        if not stopped:
+            self._safe_log(
+                "warning",
+                f"Failed to stop motor cleanly during shutdown: {result.get('error', 'unknown')}",
+            )
+        return stopped
+
+    def _best_effort_http_sound_stop(self, timeout_sec: float) -> None:
+        try:
+            result, _meta = self._http_client.sound_stop_with_meta(timeout_sec=timeout_sec)
+        except Exception as exc:  # noqa: BLE001
+            self._safe_log("info", f"Shutdown sound stop request skipped: {exc}")
+            return
+
+        if not bool(result.get("stopped", False)):
+            error_msg = str(result.get("error", "")).strip()
+            if error_msg:
+                self._safe_log("info", f"Sound stop not supported or failed: {error_msg}")
+
     def request_shutdown_cleanup(self) -> None:
         self._shutting_down = True
         if self._poll_timer is not None:
             self._poll_timer.cancel()
+
+        # Safety-first: issue a direct host-agent stop before ROS teardown and worker joins.
+        self._best_effort_http_stop(timeout_sec=min(1.0, self._http_timeout_sec))
+        self._best_effort_http_sound_stop(timeout_sec=min(1.0, self._http_timeout_sec))
 
         self._cmd_event.set()
         self._action_event.set()
@@ -763,12 +816,9 @@ class SpikeHwClientNode(Node):
         if self._action_worker_thread.is_alive():
             self._action_worker_thread.join(timeout=max(1.0, self._action_http_timeout_sec + 0.5))
 
-        result, _meta = self._http_client.stop_motor_with_meta()
-        if not bool(result.get("stopped", False)):
-            self._safe_log(
-                "warning",
-                f"Failed to stop motor cleanly during shutdown: {result.get('error', 'unknown')}",
-            )
+        # Final stop attempt in case a command was in-flight while workers were winding down.
+        self._best_effort_http_stop(timeout_sec=min(1.0, self._http_timeout_sec))
+        self._best_effort_http_sound_stop(timeout_sec=min(1.0, self._http_timeout_sec))
 
 
 def main(args: Optional[list[str]] = None) -> None:

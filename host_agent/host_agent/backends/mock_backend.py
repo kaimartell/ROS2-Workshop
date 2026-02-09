@@ -109,6 +109,32 @@ class MockBackend:
         state = self.get_state()
         return {"ok": True, "port": port, **state}
 
+    def sound_beep(
+        self,
+        freq_hz: int,
+        duration_ms: int,
+        volume: int,
+    ) -> Dict[str, Any]:
+        safe_freq = int(freq_hz)
+        safe_duration = int(duration_ms)
+        safe_volume = int(volume)
+        logging.info(
+            "[MOCK] sound/beep freq_hz=%d duration_ms=%d volume=%d",
+            safe_freq,
+            safe_duration,
+            safe_volume,
+        )
+        return {
+            "accepted": True,
+            "freq_hz": safe_freq,
+            "duration_ms": safe_duration,
+            "volume": safe_volume,
+        }
+
+    def sound_stop(self) -> Dict[str, Any]:
+        logging.info("[MOCK] sound/stop")
+        return {"stopped": True}
+
     def get_state(self) -> Dict[str, Any]:
         with self._lock:
             running = time.monotonic() < self._running_until
@@ -120,7 +146,12 @@ class MockBackend:
             }
 
     def health(self) -> Dict[str, Any]:
-        return {"ok": True, "backend": self.name, "spike_connected": True}
+        return {
+            "ok": True,
+            "backend": self.name,
+            "spike_connected": True,
+            "sound_supported": True,
+        }
 
     def close(self) -> None:
         self.stop()

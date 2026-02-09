@@ -15,7 +15,19 @@ STEP_TYPES = [
     "run_to_relative_position",
     "reset_relative_position",
     "set_duty_cycle",
+    "beep",
 ]
+
+NOTE_FREQS = {
+    "C4": 262,
+    "D4": 294,
+    "E4": 330,
+    "F4": 349,
+    "G4": 392,
+    "A4": 440,
+    "B4": 494,
+    "C5": 523,
+}
 
 
 def _quote(text: str) -> str:
@@ -52,10 +64,15 @@ def dump_pattern_yaml(pattern: Dict[str, Any]) -> str:
         "port",
         "velocity",
         "duration_sec",
+        "freq_hz",
+        "duration_ms",
+        "volume",
         "degrees",
         "position_degrees",
         "direction",
         "stop_action",
+        "gap_sec",
+        "wait_sec",
         "comment",
     ]
 
@@ -194,6 +211,58 @@ def preset_bounce(*, name: str, port: str, stop_action: str, degrees: int) -> Di
     return _build_pattern(name=name, port=port, stop_action=stop_action, steps=steps)
 
 
+def parse_notes(raw_notes: str) -> List[int]:
+    values: List[int] = []
+    for token in str(raw_notes or "").replace(" ", "").split(","):
+        if not token:
+            continue
+        note = token.strip().upper()
+        if note in NOTE_FREQS:
+            values.append(int(NOTE_FREQS[note]))
+            continue
+        try:
+            values.append(int(float(token)))
+        except ValueError as exc:
+            raise ValueError(
+                f"Unsupported note '{token}'. Use comma-separated Hz values or note names like C4,D4,E4."
+            ) from exc
+    if not values:
+        raise ValueError("No notes provided. Example: C4,D4,E4,F4,G4,A4,B4,C5")
+    return values
+
+
+def preset_melody(
+    *,
+    name: str,
+    port: str,
+    stop_action: str,
+    notes: str,
+    duration_ms: int,
+    volume: int,
+    gap_sec: float,
+) -> Dict[str, Any]:
+    _ = port
+    _ = stop_action
+    safe_duration_ms = max(10, min(5000, int(duration_ms)))
+    safe_volume = max(0, min(100, int(volume)))
+    safe_gap = max(0.0, float(gap_sec))
+    freqs = parse_notes(notes)
+
+    steps: List[Dict[str, Any]] = []
+    for idx, freq_hz in enumerate(freqs):
+        step: Dict[str, Any] = {
+            "type": "beep",
+            "freq_hz": int(freq_hz),
+            "duration_ms": safe_duration_ms,
+            "volume": safe_volume,
+        }
+        if idx < len(freqs) - 1 and safe_gap > 0.0:
+            step["gap_sec"] = safe_gap
+        steps.append(step)
+
+    return _build_pattern(name=name, port="A", stop_action="coast", steps=steps)
+
+
 def ask(prompt: str, default: str = "") -> str:
     suffix = f" [{default}]" if default else ""
     raw = input(f"{prompt}{suffix}: ").strip()
@@ -216,6 +285,17 @@ def ask_int(prompt: str, default: int) -> int:
             return int(raw)
         except ValueError:
             print("Please enter an integer.")
+
+
+def ask_optional_float(prompt: str) -> float | None:
+    while True:
+        raw = ask(prompt, "")
+        if not raw:
+            return None
+        try:
+            return float(raw)
+        except ValueError:
+            print("Please enter a number or leave blank.")
 
 
 def ask_choice(prompt: str, options: List[str], default: str) -> str:
@@ -257,6 +337,11 @@ def interactive_manual_steps() -> List[Dict[str, Any]]:
         if step_type in {"run_for_time", "sleep"}:
             step["duration_sec"] = max(0.0, ask_float("duration_sec", 0.3))
 
+        if step_type == "beep":
+            step["freq_hz"] = ask_int("freq_hz (50..5000)", 440)
+            step["duration_ms"] = ask_int("duration_ms (10..5000)", 120)
+            step["volume"] = ask_int("volume (0..100)", 60)
+
         if step_type in {"run_for_degrees", "run_to_relative_position"}:
             step["degrees"] = ask_int("degrees", 180)
 
@@ -273,6 +358,14 @@ def interactive_manual_steps() -> List[Dict[str, Any]]:
         comment = ask("Comment (optional)", "")
         if comment:
             step["comment"] = comment
+
+        gap_value = ask_optional_float("gap_sec (optional)")
+        if gap_value is not None:
+            step["gap_sec"] = max(0.0, gap_value)
+
+        wait_value = ask_optional_float("wait_sec (optional)")
+        if wait_value is not None:
+            step["wait_sec"] = max(0.0, wait_value)
 
         steps.append(step)
 
@@ -302,7 +395,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Generate workshop motor pattern YAML without coding")
     parser.add_argument(
         "--preset",
-        choices=["pulse", "metronome", "sweep", "dance", "clock", "bounce"],
+        choices=["pulse", "metronome", "sweep", "dance", "clock", "bounce", "melody"],
         help="Generate a preset pattern (non-interactive)",
     )
     parser.add_argument("--name", default="", help="Pattern name")
@@ -315,6 +408,29 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--amplitude", type=float, default=0.7)
     parser.add_argument("--degrees", type=int, default=120)
     parser.add_argument("--off-time", type=float, default=0.2)
+    parser.add_argument(
+        "--notes",
+        default="C4,D4,E4,F4,G4,A4,B4,C5",
+        help="Comma-separated note names (C4..C5) or frequencies in Hz (melody preset)",
+    )
+    parser.add_argument(
+        "--duration-ms",
+        type=int,
+        default=140,
+        help="Beep duration per note in milliseconds (melody preset)",
+    )
+    parser.add_argument(
+        "--volume",
+        type=int,
+        default=60,
+        help="Beep volume 0..100 (melody preset)",
+    )
+    parser.add_argument(
+        "--gap-sec",
+        type=float,
+        default=0.05,
+        help="Gap between melody notes in seconds (melody preset)",
+    )
     parser.add_argument("--out", default="", help="Output YAML path")
     return parser.parse_args()
 
@@ -369,6 +485,16 @@ def build_from_preset(args: argparse.Namespace) -> Dict[str, Any]:
             stop_action=stop_action,
             degrees=args.degrees,
         )
+    if args.preset == "melody":
+        return preset_melody(
+            name=name,
+            port=port,
+            stop_action=stop_action,
+            notes=args.notes,
+            duration_ms=args.duration_ms,
+            volume=args.volume,
+            gap_sec=args.gap_sec,
+        )
 
     raise ValueError(f"Unsupported preset: {args.preset}")
 
@@ -376,7 +502,7 @@ def build_from_preset(args: argparse.Namespace) -> Dict[str, Any]:
 def build_interactive() -> Dict[str, Any]:
     preset = ask_choice(
         "Choose template",
-        ["pulse", "metronome", "sweep", "dance", "clock", "bounce", "manual"],
+        ["pulse", "metronome", "sweep", "dance", "clock", "bounce", "melody", "manual"],
         "pulse",
     )
 
@@ -393,6 +519,13 @@ def build_interactive() -> Dict[str, Any]:
             amplitude=ask_float("amplitude", 0.7),
             degrees=ask_int("degrees (bounce only)", 120),
             off_time=ask_float("off_time (pulse only)", 0.2),
+            notes=ask(
+                "notes (melody only, e.g. C4,D4,E4 or 262,294,330)",
+                "C4,D4,E4,F4,G4,A4,B4,C5",
+            ),
+            duration_ms=ask_int("duration_ms (melody only)", 140),
+            volume=ask_int("volume 0..100 (melody only)", 60),
+            gap_sec=ask_float("gap_sec (melody only)", 0.05),
         )
         return build_from_preset(args)
 

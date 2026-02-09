@@ -346,6 +346,20 @@ class SpikeBleBackend:
         state = self.get_state()
         return {"ok": True, "port": port, **state}
 
+    def sound_beep(
+        self,
+        freq_hz: int,
+        duration_ms: int,
+        volume: int,
+    ) -> Dict[str, Any]:
+        _ = freq_hz
+        _ = duration_ms
+        _ = volume
+        return {"accepted": False, "error": "sound_beep not implemented for spike_ble backend"}
+
+    def sound_stop(self) -> Dict[str, Any]:
+        return {"stopped": False, "error": "sound_stop not implemented for spike_ble backend"}
+
     def _probe_connection(self) -> bool:
         if self._dependency_error is not None:
             return False
@@ -389,6 +403,7 @@ class SpikeBleBackend:
             "ok": True,
             "backend": self.name,
             "spike_connected": connected,
+            "sound_supported": False,
         }
         if self._dependency_error is not None:
             response["detail"] = f"BLE dependency missing: {self._dependency_error}"

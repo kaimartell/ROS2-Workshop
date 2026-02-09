@@ -27,6 +27,11 @@ def parse_args() -> argparse.Namespace:
         help="USB serial port for spike_usb backend (default: auto)",
     )
     parser.add_argument("--baud", type=int, default=115200, help="USB serial baud rate for spike_usb")
+    parser.add_argument(
+        "--debug-repl-snippets",
+        action="store_true",
+        help="Include raw REPL snippet text in spike_usb errors/logs",
+    )
     parser.add_argument("--motor-port", default="A", help="Motor port letter for spike_ble/spike_usb (A-F)")
     parser.add_argument("--scan-timeout", type=float, default=4.0, help="BLE scan timeout (seconds)")
     parser.add_argument("--connect-timeout", type=float, default=6.0, help="BLE connect timeout (seconds)")
@@ -70,6 +75,7 @@ def main() -> None:
         "hub_address": args.hub_address,
         "serial_port": args.serial_port,
         "baud": args.baud,
+        "debug_repl_snippets": args.debug_repl_snippets,
         "motor_port": args.motor_port,
         "scan_timeout": args.scan_timeout,
         "connect_timeout": args.connect_timeout,

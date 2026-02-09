@@ -1,82 +1,72 @@
 # SPIKE ROS 2 Workshop Notebook
 
-Use this document as the live workshop handout (Notion-ready). Copy/paste commands exactly.
+Use this as the live workshop handout (Notion-ready). Commands are copy/pasteable.
 
-## 0) Goals
+## 0) Outcome Checklist
 
-By the end of this workshop, you will:
-- [ ] Run a ROS 2 Humble environment in Docker.
-- [ ] Start a host-side SPIKE agent (`host_agent`).
-- [ ] Trigger behaviors via ROS topics.
-- [ ] Play and edit YAML patterns with no coding in ROS nodes.
-- [ ] Use encoder-aware actions (degrees and absolute/relative position).
+By the end, you should be able to:
+- [ ] Run host agent + ROS container.
+- [ ] Launch the ROS graph once and keep it running.
+- [ ] List/generate/play/stop patterns through ROS services.
+- [ ] Use `pattern_menu` as a beginner-friendly interface.
+- [ ] Read status from ROS topics.
 
-## 1) Pre-Flight Checklist
+## 1) Pre-Flight
 
-- [ ] Docker Desktop is installed and running.
-- [ ] Python 3.9+ is installed.
-- [ ] LEGO SPIKE hub is connected with a USB **data** cable.
-- [ ] Motor is connected to hub port A (or note your chosen port).
-- [ ] Repository cloned locally.
+- [ ] Docker Desktop running.
+- [ ] Python 3.9+ installed.
+- [ ] SPIKE hub connected with USB **data** cable.
+- [ ] Motor connected to port A (or note your port).
+
+Clone and install host deps:
 
 ```bash
 git clone https://github.com/<your-org-or-user>/spike-ros-workshop.git
 cd spike-ros-workshop
-```
 
-Install host dependencies:
-
-```bash
 cd host_agent
 python3 -m pip install -e ".[spike_usb]"
 cd ..
 ```
 
 What you should see:
-- Pip install finishes without errors.
-- `host_agent` package installed in editable mode.
+- [ ] pip install succeeds.
+- [ ] no import errors for `host_agent`.
 
-## 2) Start Host Agent (Outside Docker)
-
-Recommended command:
+## 2) Start Host Agent (Host OS)
 
 ```bash
 ./scripts/start_host_agent_usb.sh
 ```
 
 What you should see:
-- A startup line showing host/port and selected serial device.
-- Server listening on `http://127.0.0.1:8000`.
+- [ ] server listening on `http://127.0.0.1:8000`
+- [ ] backend `spike_usb` (or `mock` if fallback)
 
-Health check (new terminal):
+Health check:
 
 ```bash
 curl http://localhost:8000/health
 ```
 
 What you should see:
-- JSON like:
-  - `{"ok": true, "backend": "spike_usb", "spike_connected": true|false, ...}`
+- [ ] JSON with `ok: true`
+- [ ] `backend` and `spike_connected` fields
 
-### Rescue Path A: USB auto-detect failed
+### Rescue Path A: serial auto-detect fails
 
 ```bash
 python3 -m host_agent --list
-```
-
-Pick your serial device and rerun:
-
-```bash
 SPIKE_SERIAL=/dev/cu.usbmodemXXXX ./scripts/start_host_agent_usb.sh
 ```
 
-### Rescue Path B: No serial devices appear
+### Rescue Path B: no serial devices appear
 
-- [ ] Confirm cable is data-capable (not charge-only).
-- [ ] Close LEGO SPIKE app (it can lock serial).
-- [ ] Unplug/replug hub.
+- [ ] confirm data cable
+- [ ] close LEGO SPIKE app
+- [ ] unplug/replug hub
 
-Fallback for workshop continuity:
+Workshop fallback:
 
 ```bash
 SPIKE_BACKEND=mock ./scripts/start_host_agent_usb.sh
@@ -88,304 +78,215 @@ SPIKE_BACKEND=mock ./scripts/start_host_agent_usb.sh
 ./scripts/start_container.sh
 ```
 
-What you should see:
-- Docker build (first run) then interactive shell prompt in container.
-- `ros2` command available.
-
-Quick check inside container:
+Inside container:
 
 ```bash
 ros2 --help >/dev/null && echo "ros2 ready"
 ```
 
 What you should see:
-- `ros2 ready`
+- [ ] `ros2 ready`
 
 ### Rescue Path C: `ros2` not found
-
-Inside container:
 
 ```bash
 source /opt/ros/humble/setup.bash
 source /ros2_ws/install/setup.bash
 ```
 
-Then rerun `ros2 --help`.
+## 4) Launch Once (Idle-Ready)
 
-## 4) Launch Instrument (Baseline)
-
-Inside container terminal #1:
+Container terminal #1:
 
 ```bash
-ros2 launch spike_workshop_instrument instrument.launch.py \
-  mode:=pulse speed:=0.6 duration:=1.0 repeats:=4 queue_policy:=edges
+ros2 launch spike_workshop_instrument instrument.launch.py
 ```
 
 What you should see:
-- `instrument_node` and `spike_hw_client_node` logs.
-- Log line: `Ping service ready on /spike/ping`.
+- [ ] `instrument_node` log showing service endpoints
+- [ ] `spike_hw_client_node` running
+- [ ] system remains idle until triggered
 
-Inside container terminal #2:
+Container terminal #2 (sanity):
 
 ```bash
 ros2 node list
 ros2 topic list
+ros2 service list | grep instrument
 ```
 
 What you should see:
-- Nodes include `instrument_node`, `spike_hw_client_node`.
-- Topics include `/actuate`, `/status`, `/done`, `/spike/state`, `/spike/cmd`, `/spike/action`.
+- [ ] nodes include `instrument_node`, `spike_hw_client_node`
+- [ ] services include:
+  - `/instrument/list_patterns`
+  - `/instrument/generate_pattern`
+  - `/instrument/play_pattern`
+  - `/instrument/stop`
 
-## 5) Trigger and Observe
+## 5) ROS-First Pattern Workflow
 
-Trigger one actuation:
+### 5.1 List patterns
 
 ```bash
-ros2 topic pub /actuate std_msgs/msg/Empty "{}" -1
+ros2 service call /instrument/list_patterns std_srvs/srv/Trigger "{}"
 ```
 
-Observe status:
+What you should see:
+- [ ] newline-separated names like `presets/pulse_4`, `user/<name>`
+
+### 5.2 Generate a pattern from template
+
+```bash
+ros2 service call /instrument/generate_pattern spike_workshop_interfaces/srv/GeneratePattern "{template_name: 'pulse', output_name: 'my_pulse', output_dir: '/patterns/user', speed: 0.6, duration_sec: 0.3, gap_sec: 0.2, repeats: 4, bpm: 120.0, degrees: 180}"
+```
+
+What you should see:
+- [ ] response `ok: true`
+- [ ] `written_path` under `/patterns/user`
+
+### 5.2b Generate a 4-bar score (single workflow)
+
+```bash
+ros2 service call /instrument/generate_pattern spike_workshop_interfaces/srv/GeneratePattern "{template_name: 'score_4bar', output_name: 'my_score', output_dir: '/patterns/user', speed: 0.5, duration_sec: 0.0, gap_sec: 0.0, repeats: 2, bpm: 120.0, degrees: 0, motor_score: 'F S F S | F S F S | B S B S | B S B S', melody_score: 'C4 D4 E4 F4 | G4 A4 B4 C5 | - - G4 - | C5 - - -', beep_volume: 60}"
+```
+
+What you should see:
+- [ ] response `ok: true`
+- [ ] generated file under `/patterns/user`
+
+### 5.3 Play without relaunching
+
+```bash
+ros2 service call /instrument/play_pattern spike_workshop_interfaces/srv/PlayPattern "{pattern_name: 'my_pulse', pattern_path: ''}"
+```
+
+What you should see:
+- [ ] response `accepted: true`
+- [ ] motor pattern plays immediately
+
+### 5.4 Observe while running
 
 ```bash
 ros2 topic echo /status
-```
-
-Observe completion:
-
-```bash
 ros2 topic echo /done
-```
-
-Ping host agent from ROS:
-
-```bash
-ros2 service call /spike/ping std_srvs/srv/Trigger "{}"
+ros2 topic echo /spike/state
 ```
 
 What you should see:
-- `/status` transitions idle -> running -> idle.
-- `/done` message published once for finite behavior.
-- `/spike/ping` returns success and backend details.
+- [ ] `/status` transitions include step progress
+- [ ] `/done` once when complete
 
-## 6) Play Preset Patterns (No Code)
+### 5.5 Stop reliably
 
-From host terminal (with container running):
+```bash
+ros2 service call /instrument/stop std_srvs/srv/Trigger "{}"
+```
+
+What you should see:
+- [ ] response success
+- [ ] motor stops
+
+## 6) Beginner Menu (No JSON Typing)
+
+Inside container:
+
+```bash
+ros2 run spike_workshop_tools pattern_menu
+```
+
+What you should see:
+- [ ] menu options: list / play / generate / stop
+- [ ] template choices: `pulse`, `metronome_finite`, `bounce_encoder`, `clock_tick`
+- [ ] printed equivalent `ros2 service call ...` commands
+
+## 7) Pattern Preset Quick Reference
+
+- `pulse_4.yaml`: finite pulses (`run_for_time` + gaps)
+- `metronome_90.yaml`: finite tempo pulses
+- `sweep_3s.yaml`: velocity sweep
+- `dance_basic.yaml`: mixed timed + degree moves
+- `clock_tick.yaml`: absolute encoder positioning
+- `bounce_encoder.yaml`: relative encoder bounce
+- `melody_scale.yaml`: C major speaker scale (beep steps)
+- `melody_call_response.yaml`: beep phrase + motor response pattern
+- `score_motor_basic.yaml`: 4-bar motor lane starter
+- `score_melody_scale.yaml`: 4-bar melody lane starter
+- `score_call_response.yaml`: 4-bar dual-lane call/response
+- `score_back_and_forth_groove.yaml`: 4-bar dual-lane groove
+
+Schema docs:
+- `docs/pattern_schema.md`
+
+## 8) Optional Shortcut Script (Fallback)
+
+Service workflow is recommended. If needed, this shortcut still works:
 
 ```bash
 ./scripts/play_pattern.sh pulse_4
-./scripts/play_pattern.sh metronome_90
-./scripts/play_pattern.sh sweep_3s
-./scripts/play_pattern.sh dance_basic
-./scripts/play_pattern.sh clock_tick
-./scripts/play_pattern.sh bounce_encoder
 ```
 
-What you should see:
-- Launch starts with `mode:=pattern`.
-- Pattern-specific movement behavior executes.
-- `/status` shows pattern step progress.
+## 9) Troubleshooting Matrix
 
-Pattern reference:
-- `pulse_4`: timed pulses
-- `metronome_90`: finite tempo pulses
-- `sweep_3s`: signed velocity sweep
-- `dance_basic`: mixed time + degree motions
-- `clock_tick`: absolute encoder positions
-- `bounce_encoder`: relative encoder moves and return
+### Problem: `/spike/ping` fails
 
-## 7) Generate Your Own Pattern with Wizard
-
-### Interactive mode
+Check:
 
 ```bash
-python3 scripts/pattern_wizard.py
+ros2 service call /spike/ping std_srvs/srv/Trigger "{}"
+curl http://localhost:8000/health
 ```
-
-What you should see:
-- Prompts for template, motor port, and parameters.
-- Output file written under `patterns/user/`.
-- Printed play command.
-
-### Non-interactive mode
-
-```bash
-python3 scripts/pattern_wizard.py \
-  --preset pulse \
-  --speed 0.4 \
-  --duration 0.3 \
-  --repeats 6 \
-  --out patterns/user/pulse6.yaml
-```
-
-Play generated pattern:
-
-```bash
-./scripts/play_pattern.sh /patterns/user/pulse6.yaml
-```
-
-What you should see:
-- Pattern file created.
-- Launch command starts and plays your file.
-
-## 8) Encoder/Position Action Examples
-
-These examples are pattern steps used in YAML.
-
-Reset relative encoder:
-
-```yaml
-- type: "reset_relative_position"
-```
-
-Move by relative degrees:
-
-```yaml
-- type: "run_to_relative_position"
-  velocity: 0.4
-  degrees: 180
-  stop_action: "hold"
-```
-
-Move to absolute position:
-
-```yaml
-- type: "run_to_absolute_position"
-  velocity: 0.4
-  position_degrees: 270
-  stop_action: "hold"
-```
-
-Run fixed angle:
-
-```yaml
-- type: "run_for_degrees"
-  velocity: 0.5
-  degrees: -120
-  stop_action: "brake"
-```
-
-## 9) Advanced Launch Parameter Notes
-
-Common launch args:
-
-```bash
-ros2 launch spike_workshop_instrument instrument.launch.py \
-  mode:=pattern \
-  pattern_file:=/patterns/presets/bounce_encoder.yaml \
-  host_agent_url:=http://host.docker.internal:8000 \
-  queue_policy:=fifo \
-  http_timeout_sec:=1.5 \
-  action_http_timeout_sec:=8.0
-```
-
-Queue policy guidance:
-- `edges`: preserve run/stop transitions for pulse-like behavior.
-- `fifo`: preserve explicit pattern order (recommended for `mode:=pattern`).
-- `latest`: joystick-like continuous control.
-
-## 10) Troubleshooting Matrix
-
-### Problem: `curl /health` fails
-
-Checks:
-- [ ] host agent process is running.
-- [ ] host/port are correct (`127.0.0.1:8000`).
 
 Fix:
+- [ ] ensure host agent is running
+- [ ] launch with default `host_agent_url:=http://host.docker.internal:8000`
+
+### Problem: `/instrument/play_pattern` rejected as busy
+
+- [ ] call stop first:
 
 ```bash
-./scripts/start_host_agent_usb.sh
+ros2 service call /instrument/stop std_srvs/srv/Trigger "{}"
 ```
 
-### Problem: `/spike/ping` fails in ROS
-
-Checks:
-- [ ] launch `host_agent_url` is `http://host.docker.internal:8000`.
-- [ ] host agent health works on host.
-
-Fix:
+- [ ] relaunch with override if needed:
 
 ```bash
-ros2 launch spike_workshop_instrument instrument.launch.py \
-  mode:=pulse host_agent_url:=http://host.docker.internal:8000
+ros2 launch spike_workshop_instrument instrument.launch.py allow_override:=true
 ```
 
-### Problem: Pattern file not found
+### Problem: generated file not found
 
-Checks:
-- [ ] file exists in `patterns/presets/` or `patterns/user/` on host.
-- [ ] mounted path in container is `/patterns/...`.
-
-Fix:
+- [ ] list patterns again:
 
 ```bash
-./scripts/play_pattern.sh /patterns/presets/pulse_4.yaml
+ros2 service call /instrument/list_patterns std_srvs/srv/Trigger "{}"
 ```
 
-### Problem: Launch arg parsing/type errors
+- [ ] confirm output dir in generate request (`/patterns/user` recommended)
 
-Checks:
-- [ ] numeric values are numeric (`90.0`, `0.4`, `6`).
-- [ ] YAML keys match schema exactly.
+### Problem: motor still moving after interruption
 
-Schema reference:
-- `docs/pattern_schema.md`
-
-### Problem: Timing looks compressed or pulses missing
-
-Fix options:
-- [ ] use `queue_policy:=edges` for pulse/sequence.
-- [ ] use `queue_policy:=fifo` for patterns.
-- [ ] increase durations/off-time.
-
-### Problem: USB backend connected=false but workshop must continue
-
-Use mock backend:
+Manual stop:
 
 ```bash
-SPIKE_BACKEND=mock ./scripts/start_host_agent_usb.sh
+curl -s -X POST http://localhost:8000/motor/stop \
+  -H "Content-Type: application/json" \
+  -d '{"port":"A"}'
 ```
 
-## 11) Workshop Day Flow (Suggested)
+## 10) Suggested Day Flow
 
-- [ ] 00:00-00:15 Setup + health checks
-- [ ] 00:15-00:30 ROS topics/services basics
-- [ ] 00:30-00:50 Preset pattern playback
-- [ ] 00:50-01:15 Pattern wizard and personal pattern creation
-- [ ] 01:15-01:30 Encoder/position pattern lab
-- [ ] 01:30-01:45 Debugging and rescue paths
-- [ ] 01:45-02:00 Share-outs and wrap-up
+- [ ] 00:00-00:15 setup + health checks
+- [ ] 00:15-00:35 ROS nodes/topics/services overview
+- [ ] 00:35-00:55 list/play preset patterns via service calls
+- [ ] 00:55-01:20 generate custom patterns via service + `pattern_menu`
+- [ ] 01:20-01:40 encoder/position labs (`clock_tick`, `bounce_encoder`)
+- [ ] 01:40-02:00 debugging drills + share-out
 
-## 12) Glossary (Tiny)
+## 11) Tiny Glossary
 
-- **ROS node**: a running process in ROS (e.g., `instrument_node`).
-- **ROS topic**: pub/sub channel for streaming messages (e.g., `/status`).
-- **ROS service**: request/response RPC (e.g., `/spike/ping`).
-- **host agent**: host-side HTTP bridge to hardware backends.
-- **hub**: LEGO SPIKE Prime controller.
-- **pattern**: YAML-defined sequence of motor steps.
-- **action (here)**: higher-level motor command sent on `/spike/action` JSON.
-
-## 13) Maintainer GitHub Publishing Commands
-
-If needed:
-
-```bash
-# if repo not initialized
-git init
-git add .
-git commit -m "Workshop packaging and docs"
-
-# push to GitHub
-git remote add origin https://github.com/<ORG_OR_USER>/spike-ros-workshop.git
-git branch -M main
-git push -u origin main
-```
-
-If you need to rename local folder from `repo` first:
-
-```bash
-cd ..
-mv repo spike-ros-workshop
-cd spike-ros-workshop
-```
+- **Node**: a running ROS process (`instrument_node`, `spike_hw_client_node`).
+- **Topic**: streaming pub/sub channel (`/status`, `/spike/state`).
+- **Service**: request/response RPC (`/instrument/play_pattern`).
+- **Host agent**: host-side HTTP bridge to SPIKE hardware.
+- **Pattern**: YAML sequence of motor steps saved on disk.

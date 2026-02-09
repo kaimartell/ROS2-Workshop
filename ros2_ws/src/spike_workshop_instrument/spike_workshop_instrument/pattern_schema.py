@@ -16,39 +16,43 @@ DEFAULT_KEYS = {"motor_port", "stop_action"}
 STEP_SPECS: Dict[str, Tuple[set[str], set[str]]] = {
     "run": (
         {"type", "velocity"},
-        {"port", "direction", "comment"},
+        {"port", "direction", "comment", "gap_sec", "wait_sec"},
     ),
     "stop": (
         {"type"},
-        {"port", "stop_action", "comment"},
+        {"port", "stop_action", "comment", "gap_sec", "wait_sec"},
     ),
     "sleep": (
         {"type", "duration_sec"},
-        {"comment"},
+        {"comment", "gap_sec", "wait_sec"},
     ),
     "run_for_time": (
         {"type", "velocity", "duration_sec"},
-        {"port", "direction", "stop_action", "comment"},
+        {"port", "direction", "stop_action", "comment", "gap_sec", "wait_sec"},
     ),
     "run_for_degrees": (
         {"type", "velocity", "degrees"},
-        {"port", "direction", "stop_action", "comment"},
+        {"port", "direction", "stop_action", "comment", "gap_sec", "wait_sec"},
     ),
     "run_to_absolute_position": (
         {"type", "velocity", "position_degrees"},
-        {"port", "direction", "stop_action", "comment"},
+        {"port", "direction", "stop_action", "comment", "gap_sec", "wait_sec"},
     ),
     "run_to_relative_position": (
         {"type", "velocity", "degrees"},
-        {"port", "direction", "stop_action", "comment"},
+        {"port", "direction", "stop_action", "comment", "gap_sec", "wait_sec"},
     ),
     "reset_relative_position": (
         {"type"},
-        {"port", "comment"},
+        {"port", "comment", "gap_sec", "wait_sec"},
     ),
     "set_duty_cycle": (
         {"type", "velocity"},
-        {"port", "direction", "comment"},
+        {"port", "direction", "comment", "gap_sec", "wait_sec"},
+    ),
+    "beep": (
+        {"type", "freq_hz", "duration_ms"},
+        {"volume", "comment", "gap_sec", "wait_sec"},
     ),
 }
 
@@ -231,6 +235,48 @@ def _normalize_step(
     if step_type == "reset_relative_position":
         normalized["port"] = _validate_port(
             raw_step.get("port"), default=default_port, step_index=step_index
+        )
+
+    if step_type == "beep":
+        normalized["freq_hz"] = _validate_int(
+            raw_step.get("freq_hz"),
+            name="freq_hz",
+            step_index=step_index,
+        )
+        if normalized["freq_hz"] < 50 or normalized["freq_hz"] > 5000:
+            raise _error("'freq_hz' must be in [50, 5000]", step_index)
+
+        normalized["duration_ms"] = _validate_int(
+            raw_step.get("duration_ms"),
+            name="duration_ms",
+            step_index=step_index,
+        )
+        if normalized["duration_ms"] < 10 or normalized["duration_ms"] > 5000:
+            raise _error("'duration_ms' must be in [10, 5000]", step_index)
+
+        volume_value = raw_step.get("volume", 50)
+        normalized["volume"] = _validate_int(
+            volume_value,
+            name="volume",
+            step_index=step_index,
+        )
+        if normalized["volume"] < 0 or normalized["volume"] > 100:
+            raise _error("'volume' must be in [0, 100]", step_index)
+
+    if "gap_sec" in raw_step:
+        normalized["gap_sec"] = _validate_float(
+            raw_step.get("gap_sec"),
+            name="gap_sec",
+            minimum=0.0,
+            step_index=step_index,
+        )
+
+    if "wait_sec" in raw_step:
+        normalized["wait_sec"] = _validate_float(
+            raw_step.get("wait_sec"),
+            name="wait_sec",
+            minimum=0.0,
+            step_index=step_index,
         )
 
     return normalized

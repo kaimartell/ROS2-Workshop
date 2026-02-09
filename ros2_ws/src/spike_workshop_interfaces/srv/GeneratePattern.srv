@@ -1,0 +1,16 @@
+string template_name
+string output_name
+string output_dir
+float64 speed
+float64 duration_sec
+float64 gap_sec
+int32 repeats
+float64 bpm
+int32 degrees
+string motor_score
+string melody_score
+int32 beep_volume
+---
+bool ok
+string message
+string written_path

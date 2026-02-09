@@ -226,6 +226,62 @@ class HostAgentHttpClient:
             timeout_sec=timeout_sec,
         )
 
+    def sound_beep(
+        self,
+        *,
+        freq_hz: int,
+        duration_ms: int,
+        volume: int,
+        timeout_sec: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        response, _meta = self.sound_beep_with_meta(
+            freq_hz=freq_hz,
+            duration_ms=duration_ms,
+            volume=volume,
+            timeout_sec=timeout_sec,
+        )
+        return response
+
+    def sound_beep_with_meta(
+        self,
+        *,
+        freq_hz: int,
+        duration_ms: int,
+        volume: int,
+        timeout_sec: Optional[float] = None,
+    ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        payload = {
+            "freq_hz": int(freq_hz),
+            "duration_ms": int(duration_ms),
+            "volume": int(volume),
+        }
+        return self._post_with_meta(
+            "/sound/beep",
+            payload,
+            default_failure={"accepted": False},
+            timeout_sec=timeout_sec,
+        )
+
+    def sound_stop(
+        self,
+        *,
+        timeout_sec: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        response, _meta = self.sound_stop_with_meta(timeout_sec=timeout_sec)
+        return response
+
+    def sound_stop_with_meta(
+        self,
+        *,
+        timeout_sec: Optional[float] = None,
+    ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        return self._post_with_meta(
+            "/sound/stop",
+            {},
+            default_failure={"stopped": False},
+            timeout_sec=timeout_sec,
+        )
+
     def get_state(self) -> Dict[str, Any]:
         response, _meta = self.get_state_with_meta()
         return response
@@ -247,7 +303,12 @@ class HostAgentHttpClient:
         with self._lock:
             self._last_health_latency_ms = meta.get("latency_ms")
         if response is None:
-            return {"ok": False, "backend": "unreachable", "spike_connected": False}, meta
+            return {
+                "ok": False,
+                "backend": "unreachable",
+                "spike_connected": False,
+                "sound_supported": False,
+            }, meta
         return response, meta
 
     def _post_with_meta(

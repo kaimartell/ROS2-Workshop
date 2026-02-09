@@ -3,7 +3,6 @@ import glob
 import logging
 import re
 import threading
-import textwrap
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -14,6 +13,7 @@ USB_OK_MARKER = "__SPIKE_USB_OK__"
 USB_ERR_MARKER = "__SPIKE_USB_ERR__"
 USB_STATUS_MARKER = "__SPIKE_USB_STATUS__"
 STOP_SPEED_EPSILON = 1e-3
+SOUND_PROBE_CACHE_TTL_SEC = 10.0
 
 _SERIAL_CANDIDATE_REGEX = re.compile(
     r"^/dev/(cu|tty)\.(usbmodem|usbserial|SLAB_USBtoUART|wchusbserial|ttyUSB|ttyACM)",
@@ -92,6 +92,7 @@ class SpikeUsbBackend:
         prompt_timeout: float = 2.0,
         command_timeout: float = 8.0,
         sync_retries: int = 2,
+        debug_repl_snippets: bool = False,
         **_: Any,
     ) -> None:
         self._serial_port_config = (serial_port or "auto").strip()
@@ -100,6 +101,7 @@ class SpikeUsbBackend:
         self._prompt_timeout = max(0.5, float(prompt_timeout))
         self._command_timeout = max(1.0, float(command_timeout))
         self._sync_retries = max(2, int(sync_retries))
+        self._debug_repl_snippets = bool(debug_repl_snippets)
 
         self._lock = threading.Lock()
         self._state = "idle"
@@ -108,6 +110,8 @@ class SpikeUsbBackend:
         self._spike_connected = False
         self._last_error = ""
         self._resolved_port = ""
+        self._sound_supported_cache: Optional[bool] = None
+        self._sound_probe_monotonic = 0.0
 
     @staticmethod
     def _trim_text(text: str, limit: int = 800) -> str:
@@ -127,6 +131,22 @@ class SpikeUsbBackend:
     @staticmethod
     def _duty_units(speed: float) -> int:
         return int(max(-100, min(100, round(float(speed) * 100.0))))
+
+    @staticmethod
+    def _clamp_freq_hz(value: int) -> int:
+        return int(max(50, min(5000, int(value))))
+
+    @staticmethod
+    def _clamp_duration_ms(value: int) -> int:
+        return int(max(10, min(5000, int(value))))
+
+    @staticmethod
+    def _clamp_volume(value: int) -> int:
+        return int(max(0, min(100, int(value))))
+
+    @staticmethod
+    def _prepare_snippet(lines: List[str]) -> str:
+        return "\n".join(lines).rstrip("\n") + "\n"
 
     def _record_error(self, message: str) -> None:
         self._last_error = str(message)
@@ -211,71 +231,91 @@ class SpikeUsbBackend:
     def _successful(result: RawExecResult) -> bool:
         return bool(result.ok and USB_OK_MARKER in (result.stdout or "") and not result.stderr.strip())
 
-    def _build_core_snippet(self, *, port_letter: str, body: str) -> str:
-        core = f"""
-try:
-    import motor
-except Exception as _e:
-    raise RuntimeError("Not running LEGO SPIKE firmware / knowledge base API. import motor failed: " + repr(_e))
+    def _build_core_snippet(self, *, port_letter: str, body_lines: List[str]) -> str:
+        lines = [
+            "try:",
+            "    import motor",
+            "except Exception as _e:",
+            "    raise RuntimeError('Not running LEGO SPIKE firmware / knowledge base API. import motor failed: ' + repr(_e))",
+            "",
+            "try:",
+            "    from hub import port",
+            "except Exception as _e:",
+            "    raise RuntimeError('Not running LEGO SPIKE firmware / knowledge base API. from hub import port failed: ' + repr(_e))",
+            "",
+            f"_letter = {port_letter!r}",
+            "try:",
+            "    _p = getattr(port, _letter)",
+            "except Exception as _e:",
+            "    _available = [_n for _n in dir(port) if len(_n) == 1 and 'A' <= _n <= 'Z']",
+            "    raise RuntimeError('Invalid motor port ' + _letter + ' available=' + repr(_available) + ' err=' + repr(_e))",
+            "",
+        ]
+        lines.extend(body_lines)
+        lines.extend([
+            "",
+            f"print({USB_OK_MARKER!r})",
+        ])
 
-try:
-    from hub import port
-except Exception as _e:
-    raise RuntimeError("Not running LEGO SPIKE firmware / knowledge base API. from hub import port failed: " + repr(_e))
+        wrapped: List[str] = ["try:"]
+        for line in lines:
+            if line:
+                wrapped.append(f"    {line}")
+            else:
+                wrapped.append("")
+        wrapped.extend(
+            [
+                "except Exception as _e:",
+                f"    print({USB_ERR_MARKER!r} + ' ' + repr(_e))",
+            ]
+        )
+        return self._prepare_snippet(wrapped)
 
-_letter = {port_letter!r}
-_available = []
-for _name in dir(port):
-    if len(_name) == 1 and _name >= "A" and _name <= "Z":
-        _available.append(_name)
-if _letter not in _available:
-    raise RuntimeError("Invalid motor port " + _letter + " available=" + repr(_available))
+    def _build_sound_snippet(self, body_lines: List[str]) -> str:
+        lines = [
+            "try:",
+            "    from hub import sound",
+            "except Exception as _e:",
+            "    raise RuntimeError('Not running LEGO SPIKE firmware / knowledge base API. from hub import sound failed: ' + repr(_e))",
+            "",
+        ]
+        lines.extend(body_lines)
+        lines.extend(
+            [
+                "",
+                f"print({USB_OK_MARKER!r})",
+            ]
+        )
 
-_p = getattr(port, _letter)
-{body}
-print({USB_OK_MARKER!r})
-"""
-        wrapped = f"""
-try:
-{textwrap.indent(textwrap.dedent(core).strip(), "    ")}
-except Exception as _e:
-    print({USB_ERR_MARKER!r} + " " + repr(_e))
-"""
-        return textwrap.dedent(wrapped).strip() + "\n"
+        wrapped: List[str] = ["try:"]
+        for line in lines:
+            if line:
+                wrapped.append(f"    {line}")
+            else:
+                wrapped.append("")
+        wrapped.extend(
+            [
+                "except Exception as _e:",
+                f"    print({USB_ERR_MARKER!r} + ' ' + repr(_e))",
+            ]
+        )
+        return self._prepare_snippet(wrapped)
 
-    def _stop_block(self, stop_action: str) -> str:
+    def _stop_lines(self, stop_action: str) -> List[str]:
         normalized = str(stop_action or "coast").strip().lower()
-        return textwrap.dedent(
-            f"""
-_stop_action = {normalized!r}
-if _stop_action == "coast":
-    try:
-        motor.run(_p, 0)
-    except Exception as _e1:
-        try:
-            motor.stop(_p)
-        except Exception as _e2:
-            raise RuntimeError("coast stop failed: " + repr(_e1) + "; " + repr(_e2))
-else:
-    try:
-        motor.stop(_p)
-    except Exception as _e1:
-        try:
-            motor.run(_p, 0)
-        except Exception as _e2:
-            try:
-                motor.set_duty_cycle(_p, 0)
-            except Exception as _e3:
-                raise RuntimeError(
-                    "motor stop fallbacks failed: "
-                    + repr(_e1)
-                    + "; "
-                    + repr(_e2)
-                    + "; "
-                    + repr(_e3)
-                )
-"""
-        ).strip()
+        return [
+            f"_stop_action = {normalized!r}",
+            "try:",
+            "    motor.stop(_p)",
+            "except Exception as _e1:",
+            "    try:",
+            "        motor.run(_p, 0)",
+            "    except Exception as _e2:",
+            "        try:",
+            "            motor.set_duty_cycle(_p, 0)",
+            "        except Exception as _e3:",
+            "            raise RuntimeError('stop failed for action=' + repr(_stop_action) + ': ' + repr(_e1) + '; ' + repr(_e2) + '; ' + repr(_e3))",
+        ]
 
     def _set_idle(self) -> None:
         self._state = "idle"
@@ -286,6 +326,28 @@ else:
         self._state = "running"
         self._last_speed = float(speed)
         self._timestamp = time.time()
+
+    def _probe_sound_supported(self, *, force: bool = False) -> bool:
+        now = time.monotonic()
+        if (
+            (not force)
+            and self._sound_supported_cache is not None
+            and (now - self._sound_probe_monotonic) < SOUND_PROBE_CACHE_TTL_SEC
+        ):
+            return bool(self._sound_supported_cache)
+
+        snippet = self._build_sound_snippet(
+            body_lines=[
+                "if not hasattr(sound, 'beep'):",
+                "    raise RuntimeError('Missing hub.sound.beep API; firmware/API mismatch.')",
+            ]
+        )
+        result = self._execute(snippet=snippet, timeout=max(2.0, self._prompt_timeout + 1.0))
+        supported = self._successful(result)
+
+        self._sound_probe_monotonic = now
+        self._sound_supported_cache = supported
+        return supported
 
     def _run_checked(
         self,
@@ -306,9 +368,14 @@ else:
         error = self._extract_error_from_result(result, default=failure_default)
         self._record_error(error)
         logging.warning("[SPIKE_USB] %s failed: %s", fail_key, error)
+        if self._debug_repl_snippets:
+            logging.warning("[SPIKE_USB] failing snippet:\n%s", snippet)
+
         payload = {fail_key: False, "error": error}
         payload["stdout"] = self._trim_text(result.stdout)
         payload["stderr"] = self._trim_text(result.stderr)
+        if self._debug_repl_snippets:
+            payload["snippet"] = self._trim_text(snippet, limit=3000)
         return payload
 
     def run_with_diagnostics(self, speed: float, duration: float, port: str = "") -> Dict[str, Any]:
@@ -320,12 +387,10 @@ else:
 
             snippet = self._build_core_snippet(
                 port_letter=port_letter,
-                body=textwrap.dedent(
-                    f"""
-_velocity = {velocity}
-motor.run(_p, _velocity)
-"""
-                ).strip(),
+                body_lines=[
+                    f"_velocity = {velocity}",
+                    "motor.run(_p, _velocity)",
+                ],
             )
 
             payload = self._run_checked(
@@ -355,7 +420,7 @@ motor.run(_p, _velocity)
             port_letter = self._normalize_port(port)
             snippet = self._build_core_snippet(
                 port_letter=port_letter,
-                body=self._stop_block(stop_action),
+                body_lines=self._stop_lines(stop_action),
             )
             payload = self._run_checked(
                 snippet=snippet,
@@ -385,25 +450,20 @@ motor.run(_p, _velocity)
             if move_degrees == 0:
                 return {"accepted": False, "error": "degrees cannot be 0"}
 
-            body = textwrap.dedent(
-                f"""
-_velocity = {velocity}
-_degrees = {move_degrees}
-if hasattr(motor, "run_for_degrees"):
-    try:
-        motor.run_for_degrees(_p, _degrees, _velocity)
-    except TypeError:
-        motor.run_for_degrees(_p, _degrees, _velocity, {str(stop_action).strip().lower()!r})
-elif hasattr(motor, "run_angle"):
-    motor.run_angle(_p, _velocity, _degrees)
-else:
-    raise RuntimeError("No supported API for run_for_degrees (expected motor.run_for_degrees or motor.run_angle)")
-{self._stop_block(stop_action)}
-"""
-            ).strip()
+            body_lines = [
+                f"_velocity = {velocity}",
+                f"_degrees = {move_degrees}",
+                "if hasattr(motor, 'run_for_degrees'):",
+                "    motor.run_for_degrees(_p, _degrees, _velocity)",
+                "elif hasattr(motor, 'run_angle'):",
+                "    motor.run_angle(_p, _velocity, _degrees)",
+                "else:",
+                "    raise RuntimeError('Missing motor.run_for_degrees API; firmware/API mismatch (also checked run_angle).')",
+            ]
+            body_lines.extend(self._stop_lines(stop_action))
 
             payload = self._run_checked(
-                snippet=self._build_core_snippet(port_letter=port_letter, body=body),
+                snippet=self._build_core_snippet(port_letter=port_letter, body_lines=body_lines),
                 timeout=max(3.0, self._command_timeout),
                 success_payload={"accepted": True, "port": port_letter},
                 failure_default="USB run_for_degrees failed",
@@ -425,26 +485,22 @@ else:
             velocity = self._velocity_units(safe_speed)
             target = int(position_degrees)
 
-            body = textwrap.dedent(
-                f"""
-_velocity = {velocity}
-_target = {target}
-if hasattr(motor, "run_to_absolute_position"):
-    motor.run_to_absolute_position(_p, _target, _velocity)
-elif hasattr(motor, "run_to_position"):
-    motor.run_to_position(_p, _target, _velocity)
-elif hasattr(motor, "run_target"):
-    motor.run_target(_p, _velocity, _target)
-else:
-    raise RuntimeError(
-        "No supported API for run_to_absolute_position (expected motor.run_to_absolute_position, run_to_position, or run_target)"
-    )
-{self._stop_block(stop_action)}
-"""
-            ).strip()
+            body_lines = [
+                f"_velocity = {velocity}",
+                f"_target = {target}",
+                "if hasattr(motor, 'run_to_absolute_position'):",
+                "    motor.run_to_absolute_position(_p, _target, _velocity)",
+                "elif hasattr(motor, 'run_to_position'):",
+                "    motor.run_to_position(_p, _target, _velocity)",
+                "elif hasattr(motor, 'run_target'):",
+                "    motor.run_target(_p, _velocity, _target)",
+                "else:",
+                "    raise RuntimeError('Missing motor.run_to_absolute_position API; firmware/API mismatch (checked run_to_position/run_target).')",
+            ]
+            body_lines.extend(self._stop_lines(stop_action))
 
             payload = self._run_checked(
-                snippet=self._build_core_snippet(port_letter=port_letter, body=body),
+                snippet=self._build_core_snippet(port_letter=port_letter, body_lines=body_lines),
                 timeout=max(3.0, self._command_timeout),
                 success_payload={"accepted": True, "port": port_letter},
                 failure_default="USB run_to_absolute failed",
@@ -468,26 +524,22 @@ else:
             if delta == 0:
                 return {"accepted": False, "error": "degrees cannot be 0"}
 
-            body = textwrap.dedent(
-                f"""
-_velocity = {velocity}
-_delta = {delta}
-if hasattr(motor, "run_to_relative_position"):
-    motor.run_to_relative_position(_p, _delta, _velocity)
-elif hasattr(motor, "run_for_degrees"):
-    motor.run_for_degrees(_p, _delta, _velocity)
-elif hasattr(motor, "run_angle"):
-    motor.run_angle(_p, _velocity, _delta)
-else:
-    raise RuntimeError(
-        "No supported API for run_to_relative_position (expected motor.run_to_relative_position, run_for_degrees, or run_angle)"
-    )
-{self._stop_block(stop_action)}
-"""
-            ).strip()
+            body_lines = [
+                f"_velocity = {velocity}",
+                f"_delta = {delta}",
+                "if hasattr(motor, 'run_to_relative_position'):",
+                "    motor.run_to_relative_position(_p, _delta, _velocity)",
+                "elif hasattr(motor, 'run_for_degrees'):",
+                "    motor.run_for_degrees(_p, _delta, _velocity)",
+                "elif hasattr(motor, 'run_angle'):",
+                "    motor.run_angle(_p, _velocity, _delta)",
+                "else:",
+                "    raise RuntimeError('Missing motor.run_to_relative_position API; firmware/API mismatch (checked run_for_degrees/run_angle).')",
+            ]
+            body_lines.extend(self._stop_lines(stop_action))
 
             payload = self._run_checked(
-                snippet=self._build_core_snippet(port_letter=port_letter, body=body),
+                snippet=self._build_core_snippet(port_letter=port_letter, body_lines=body_lines),
                 timeout=max(3.0, self._command_timeout),
                 success_payload={"accepted": True, "port": port_letter},
                 failure_default="USB run_to_relative failed",
@@ -499,22 +551,20 @@ else:
     def reset_relative(self, port: str = "A") -> Dict[str, Any]:
         with self._lock:
             port_letter = self._normalize_port(port)
-            body = textwrap.dedent(
-                """
-if hasattr(motor, "reset_relative_position"):
-    try:
-        motor.reset_relative_position(_p, 0)
-    except TypeError:
-        motor.reset_relative_position(_p)
-elif hasattr(motor, "set_relative_position"):
-    motor.set_relative_position(_p, 0)
-else:
-    raise RuntimeError("No supported API for reset_relative_position")
-"""
-            ).strip()
+            body_lines = [
+                "if hasattr(motor, 'reset_relative_position'):",
+                "    try:",
+                "        motor.reset_relative_position(_p, 0)",
+                "    except TypeError:",
+                "        motor.reset_relative_position(_p)",
+                "elif hasattr(motor, 'set_relative_position'):",
+                "    motor.set_relative_position(_p, 0)",
+                "else:",
+                "    raise RuntimeError('Missing motor.reset_relative_position API; firmware/API mismatch.')",
+            ]
 
             payload = self._run_checked(
-                snippet=self._build_core_snippet(port_letter=port_letter, body=body),
+                snippet=self._build_core_snippet(port_letter=port_letter, body_lines=body_lines),
                 timeout=max(2.0, self._command_timeout),
                 success_payload={"accepted": True, "port": port_letter},
                 failure_default="USB reset_relative failed",
@@ -528,19 +578,17 @@ else:
             port_letter = self._normalize_port(port)
             duty = self._duty_units(speed)
 
-            body = textwrap.dedent(
-                f"""
-_duty = {duty}
-if hasattr(motor, "set_duty_cycle"):
-    motor.set_duty_cycle(_p, _duty)
-elif hasattr(motor, "run"):
-    motor.run(_p, int(_duty * 10))
-else:
-    raise RuntimeError("No supported API for set_duty_cycle")
-"""
-            ).strip()
+            body_lines = [
+                f"_duty = {duty}",
+                "if hasattr(motor, 'set_duty_cycle'):",
+                "    motor.set_duty_cycle(_p, _duty)",
+                "elif hasattr(motor, 'run'):",
+                "    motor.run(_p, int(_duty * 10))",
+                "else:",
+                "    raise RuntimeError('Missing motor.set_duty_cycle API; firmware/API mismatch.')",
+            ]
             payload = self._run_checked(
-                snippet=self._build_core_snippet(port_letter=port_letter, body=body),
+                snippet=self._build_core_snippet(port_letter=port_letter, body_lines=body_lines),
                 timeout=max(2.0, self._command_timeout),
                 success_payload={"accepted": True, "port": port_letter},
                 failure_default="USB set_duty_cycle failed",
@@ -553,40 +601,108 @@ else:
                     self._set_running(float(duty) / 100.0)
             return payload
 
+    def sound_beep(
+        self,
+        freq_hz: int,
+        duration_ms: int,
+        volume: int,
+    ) -> Dict[str, Any]:
+        with self._lock:
+            safe_freq = self._clamp_freq_hz(freq_hz)
+            safe_duration = self._clamp_duration_ms(duration_ms)
+            safe_volume = self._clamp_volume(volume)
+
+            snippet = self._build_sound_snippet(
+                body_lines=[
+                    "if not hasattr(sound, 'beep'):",
+                    "    raise RuntimeError('Missing hub.sound.beep API; firmware/API mismatch.')",
+                    f"sound.beep({safe_freq}, {safe_duration}, {safe_volume})",
+                ]
+            )
+            payload = self._run_checked(
+                snippet=snippet,
+                timeout=max(2.0, self._command_timeout),
+                success_payload={
+                    "accepted": True,
+                    "freq_hz": safe_freq,
+                    "duration_ms": safe_duration,
+                    "volume": safe_volume,
+                },
+                failure_default="USB sound_beep failed",
+                fail_key="accepted",
+            )
+            if bool(payload.get("accepted", False)):
+                self._sound_supported_cache = True
+                self._sound_probe_monotonic = time.monotonic()
+            else:
+                self._sound_supported_cache = False
+            payload.setdefault("freq_hz", safe_freq)
+            payload.setdefault("duration_ms", safe_duration)
+            payload.setdefault("volume", safe_volume)
+            return payload
+
+    def sound_stop(self) -> Dict[str, Any]:
+        with self._lock:
+            snippet = self._build_sound_snippet(
+                body_lines=[
+                    "if hasattr(sound, 'stop'):",
+                    "    sound.stop()",
+                    "elif hasattr(sound, 'beep'):",
+                    "    pass",
+                    "else:",
+                    "    raise RuntimeError('Missing hub.sound API; firmware/API mismatch.')",
+                ]
+            )
+            payload = self._run_checked(
+                snippet=snippet,
+                timeout=max(2.0, self._command_timeout),
+                success_payload={"stopped": True},
+                failure_default="USB sound_stop failed",
+                fail_key="stopped",
+            )
+            if bool(payload.get("stopped", False)):
+                self._sound_supported_cache = True
+                self._sound_probe_monotonic = time.monotonic()
+            return payload
+
     def motor_status(self, port: str = "A") -> Dict[str, Any]:
         with self._lock:
             port_letter = self._normalize_port(port)
-            body = textwrap.dedent(
-                f"""
-_status = {{}}
-_status["port"] = _letter
-if hasattr(motor, "relative_position"):
-    try:
-        _status["relative_position"] = motor.relative_position(_p)
-    except Exception:
-        pass
-if hasattr(motor, "absolute_position"):
-    try:
-        _status["absolute_position"] = motor.absolute_position(_p)
-    except Exception:
-        pass
-if hasattr(motor, "velocity"):
-    try:
-        _status["velocity"] = motor.velocity(_p)
-    except Exception:
-        pass
-print({USB_STATUS_MARKER!r} + repr(_status))
-"""
-            ).strip()
+            body_lines = [
+                "_status = {}",
+                "_status['port'] = _letter",
+                "if hasattr(motor, 'relative_position'):",
+                "    try:",
+                "        _status['relative_position'] = motor.relative_position(_p)",
+                "    except Exception:",
+                "        pass",
+                "if hasattr(motor, 'absolute_position'):",
+                "    try:",
+                "        _status['absolute_position'] = motor.absolute_position(_p)",
+                "    except Exception:",
+                "        pass",
+                "if hasattr(motor, 'velocity'):",
+                "    try:",
+                "        _status['velocity'] = motor.velocity(_p)",
+                "    except Exception:",
+                "        pass",
+                f"print({USB_STATUS_MARKER!r} + repr(_status))",
+            ]
+            snippet = self._build_core_snippet(port_letter=port_letter, body_lines=body_lines)
             result = self._execute(
-                snippet=self._build_core_snippet(port_letter=port_letter, body=body),
+                snippet=snippet,
                 timeout=max(2.0, self._command_timeout),
             )
             if not self._successful(result):
                 self._spike_connected = False
                 error = self._extract_error_from_result(result, default="USB motor_status failed")
                 self._record_error(error)
-                return {"ok": False, "error": error}
+                payload: Dict[str, Any] = {"ok": False, "error": error}
+                if self._debug_repl_snippets:
+                    payload["snippet"] = self._trim_text(snippet, limit=3000)
+                    payload["stdout"] = self._trim_text(result.stdout)
+                    payload["stderr"] = self._trim_text(result.stderr)
+                return payload
 
             status_payload: Dict[str, Any] = {}
             for line in (result.stdout or "").splitlines():
@@ -612,7 +728,7 @@ print({USB_STATUS_MARKER!r} + repr(_status))
 
     def _minimal_repl_check(self) -> Tuple[bool, RawExecResult]:
         result = self._execute(
-            snippet=f"print({USB_OK_MARKER!r})",
+            snippet=f"print({USB_OK_MARKER!r})\n",
             timeout=max(self._prompt_timeout + 1.0, 2.0),
         )
         repl_ok = self._successful(result)
@@ -630,6 +746,7 @@ print({USB_STATUS_MARKER!r} + repr(_status))
         with self._lock:
             repl_ok, result = self._minimal_repl_check()
             self._spike_connected = repl_ok
+            sound_supported = repl_ok and self._probe_sound_supported(force=False)
 
             if repl_ok:
                 self._last_error = ""
@@ -642,15 +759,23 @@ print({USB_STATUS_MARKER!r} + repr(_status))
                 "backend": self.name,
                 "spike_connected": repl_ok,
                 "repl_ok": repl_ok,
+                "sound_supported": bool(sound_supported),
             }
             if self._resolved_port:
                 payload["serial_port"] = self._resolved_port
             if self._last_error:
                 payload["detail"] = self._last_error
+            if self._debug_repl_snippets and (not repl_ok):
+                payload["stdout"] = self._trim_text(result.stdout)
+                payload["stderr"] = self._trim_text(result.stderr)
             return payload
 
     def close(self) -> None:
         try:
             self.stop()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            self.sound_stop()
         except Exception:  # noqa: BLE001
             pass

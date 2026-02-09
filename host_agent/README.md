@@ -49,6 +49,8 @@ python3 -m pip install -e ".[spike_ble]"
 - `from hub import port`
 - `import motor`
 - `motor.run(...)`, `motor.stop(...)`
+- `from hub import sound`
+- `sound.beep(freq_hz, duration_ms, volume)`
 
 Manual REPL sanity check:
 
@@ -56,6 +58,9 @@ Manual REPL sanity check:
 import motor
 from hub import port
 motor.run(port.A, 1000)
+
+from hub import sound
+sound.beep(440, 120, 60)
 ```
 
 `/motor/run` is non-blocking in USB backend:
@@ -66,12 +71,13 @@ motor.run(port.A, 1000)
 
 ```bash
 python3 -m host_agent.tools.spike_usb_smoketest --serial-port auto --motor-port A --speed 0.2 --duration 0.3
+python3 -m host_agent.tools.spike_usb_smoketest --serial-port auto --motor-port A --beep --beep-freq 440 --beep-duration-ms 140 --beep-volume 60
 ```
 
 ## HTTP API
 
 Base endpoints:
-- `GET /health` -> `{ "ok": true, "backend": "...", "spike_connected": bool }`
+- `GET /health` -> `{ "ok": true, "backend": "...", "spike_connected": bool, "sound_supported": bool }`
 - `GET /state` -> `{ "state": "idle|running", "last_speed": float, "timestamp": float }`
 
 Motor endpoints:
@@ -83,6 +89,10 @@ Motor endpoints:
 - `POST /motor/run_to_relative` body `{ "port": "A", "speed": float, "degrees": int, "stop_action": "..." }`
 - `POST /motor/set_duty_cycle` body `{ "port": "A", "speed": float }`
 - `POST /motor/status` body `{ "port": "A" }`
+
+Sound endpoints:
+- `POST /sound/beep` body `{ "freq_hz": 440, "duration_ms": 120, "volume": 60 }`
+- `POST /sound/stop` body `{}`
 
 ## Troubleshooting
 

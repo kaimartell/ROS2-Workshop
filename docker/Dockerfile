@@ -6,7 +6,9 @@ ENV ROS_DISTRO=humble
 SHELL ["/bin/bash", "-c"]
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
     ca-certificates \
+    cmake \
     curl \
     gnupg2 \
     lsb-release \
@@ -43,7 +45,7 @@ COPY ros2_ws/src /ros2_ws/src
 COPY patterns /patterns
 
 RUN source /opt/ros/${ROS_DISTRO}/setup.bash \
-    && rosdep install --from-paths src --ignore-src -r -y \
+    && rosdep install --from-paths src --ignore-src -r -y --skip-keys "ament_python" \
     && colcon build --symlink-install
 
 RUN printf '\n# Auto-source ROS for interactive shells.\nsource /opt/ros/humble/setup.bash\nif [ -f /ros2_ws/install/setup.bash ]; then source /ros2_ws/install/setup.bash; fi\n' >> /etc/bash.bashrc \

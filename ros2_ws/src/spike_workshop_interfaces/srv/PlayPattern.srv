@@ -1,0 +1,5 @@
+string pattern_name
+string pattern_path
+---
+bool accepted
+string message
