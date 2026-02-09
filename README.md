@@ -19,7 +19,7 @@ Instead of restarting launch files for each pattern, you control playback via se
 
 ## Pre-Workshop Setup
 
-- Install Docker Desktop and start it.
+- Install Docker Desktop and start it: https://docs.docker.com/desktop/setup/install/mac-install/
 - Install Python 3.9+.
 - Connect LEGO SPIKE Prime hub + motor + USB data cable.
 - Clone this repo.
@@ -27,9 +27,6 @@ Instead of restarting launch files for each pattern, you control playback via se
 ```bash
 git clone https://github.com/kaimartell/ROS2-Workshop.git
 cd spike-ros-workshop
-
-Docker Desktop Install
-https://docs.docker.com/desktop/setup/install/mac-install/
 
 cd host_agent
 python3 -m pip install -e ".[spike_usb]"
