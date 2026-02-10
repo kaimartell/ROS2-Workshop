@@ -1,6 +1,6 @@
 # spike-ros-workshop
 
-Build a physical instrument using ROS 2 and LEGO SPIKE Prime.
+Build a physical instrument using ROS 2 and LEGO SPIKE Prime
 
 This repository gives participants ROS flow:
 - launch ROS once
@@ -16,6 +16,8 @@ ROS graph:
 - services: `/spike/ping`, `/instrument/list_patterns`, `/instrument/generate_score`, `/instrument/play_pattern`, `/instrument/stop`
 
 ## Pre-Workshop Setup
+
+- Scroll down to the Appendix at the bottom for learning material
 
 - Install Docker Desktop and start it: https://docs.docker.com/desktop/setup/install/mac-install/
   - Pay attention to Silicon vs Intel chip
